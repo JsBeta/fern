@@ -1,0 +1,16 @@
+fern
+Copyright 2026 JsBeta
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The following parts are original to this project:
+
+  src/            Rust implementation (standard library only, no third-party crates)
+  build.rs        build-time gzip packaging of the front-end assets
+  tests/          unit and integration tests
+  tools/          icon generation helper
+  ui/             front-end (HTML/CSS/JS/SVG/ICO) embedded into the binary
+
+The produced binaries link a C runtime statically. Binary distributions should
+state the linking mode and, for glibc static builds, provide the means to relink
+(see the license section of README.md).

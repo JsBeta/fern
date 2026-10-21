@@ -299,4 +299,7 @@ cargo test     # 46 个单元测试 + 25 个端到端集成测试
 
 ## 7. 许可证
 
-MIT
+[Apache License 2.0](LICENSE) · Copyright 2026 JsBeta
+
+- 本仓库代码（`src/`、`build.rs`、`tests/`、`tools/`）与内嵌前端资源（`ui/`）均由本项目自行实现，无第三方 crate 依赖；分发或修改时请保留 `LICENSE`，如有 `NOTICE` 则一并保留。
+- 二进制产物以静态方式链接 C 运行库，需注意对应运行库的许可：`x86_64-unknown-linux-musl` 链接 musl（MIT），静态链接无额外义务；本文档给出的 armv7 链路（`arm-none-linux-gnueabihf-gcc` + `-C target-feature=+crt-static`）静态链接的是 glibc `libc.a`，glibc 属 LGPL-2.1-or-later，分发二进制时需一并提供可重新链接的手段（对应的目标文件，或源码 + 构建脚本）；Windows 目标的 `crt-static` 指向 MSVC/MinGW 运行库，建议在发布页注明工具链版本。
