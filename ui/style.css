@@ -1,0 +1,667 @@
+:root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --text: #1c2024;
+    --muted: #6b7280;
+    --line: #e4e6ea;
+    --accent: #2f6fed;
+    --accent-text: #ffffff;
+    --danger: #d64545;
+    --row: #ffffff;
+    --row-alt: #fafbfc;
+    --row-hover: #eef3fe;
+    --shadow:
+        0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #14161a;
+        --panel: #1b1e24;
+        --text: #e8eaed;
+        --muted: #9aa3ae;
+        --line: #2a2f37;
+        --accent: #6f9dff;
+        --accent-text: #0d1117;
+        --danger: #ff7b72;
+        --row: #1b1e24;
+        --row-alt: #1e222a;
+        --row-hover: #263041;
+        --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font:
+        14px/1.5 -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        "Noto Sans SC",
+        "Microsoft YaHei",
+        sans-serif;
+}
+
+.app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 18px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+}
+
+.brand {
+    flex: 0 0 auto;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.brand .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+
+.notice {
+    min-width: 0;
+    max-width: 52ch;
+    padding: 4px 10px;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.08);
+    color: var(--accent);
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.notice[hidden] {
+    display: none;
+}
+
+.who {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.who[hidden] {
+    display: none;
+}
+
+.who .tag {
+    padding: 2px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+button {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 11px;
+    cursor: pointer;
+    transition:
+        background 0.15s,
+        border-color 0.15s,
+        color 0.15s;
+}
+
+button:hover:not(:disabled) {
+    background: var(--row-hover);
+    color: var(--accent);
+}
+button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+}
+button.danger {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.login {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    padding: 40px 18px;
+}
+
+.login form {
+    width: min(360px, 100%);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 24px;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.login h1 {
+    font-size: 20px;
+    margin: 0;
+}
+.hint {
+    color: var(--muted);
+    font-size: 13px;
+    margin: 0 0 6px;
+}
+
+.login label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+input[type="text"],
+input[type="password"],
+input:not([type]) {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+/* input:focus, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+} */
+
+.error {
+    color: var(--danger);
+    font-size: 13px;
+    margin: 0;
+}
+
+.browser {
+    flex: 1;
+    padding: 16px 18px 32px;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+.crumbs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    font-size: 14px;
+    margin-bottom: 12px;
+}
+
+.crumbs a {
+    color: var(--accent);
+    text-decoration: none;
+    padding: 2px 6px;
+    border-radius: 6px;
+}
+
+.crumbs a:hover {
+    background: var(--row-hover);
+}
+.crumbs .sep {
+    color: var(--muted);
+}
+
+.crumbs .current {
+    color: var(--muted);
+    padding: 2px 6px;
+}
+
+/* The recycle bin is browse only: uploading into it makes no sense. */
+body.trash-mode .dropzone,
+body.trash-mode .uploads {
+    display: none;
+}
+
+/* Invisible 1px probe sitting just above the toolbar; the script flips the
+   `.stuck` class on it so the bar can cast a shadow only while pinned. */
+.toolbar-sentinel {
+    height: 1px;
+    margin-bottom: -1px;
+}
+
+/* Pinned to the top so the action buttons stay reachable in long listings.
+   The 8px padding plus the matching -8px top margin / 4px bottom margin keep
+   the original 12px rhythm while giving the bar an opaque backdrop for the
+   rows scrolling underneath. */
+.toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin: -8px 0 4px;
+    padding: 8px;
+    background: var(--bg);
+    transition: box-shadow 0.15s;
+}
+
+.toolbar.stuck {
+    box-shadow: 0 8px 12px -10px rgba(16, 24, 40, 0.5);
+}
+
+.toolbar button {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.ic {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+/* Labels live in the tooltip so the bar stays compact. It opens downwards
+   because the pinned toolbar has no room above it, and the trailing buttons
+   anchor it to their right edge so it cannot create a horizontal scrollbar. */
+.toolbar button[data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 3px 7px;
+    border-radius: 6px;
+    background: var(--text);
+    color: var(--bg);
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.12s;
+}
+
+.toolbar button[data-tip]:hover::after,
+.toolbar button[data-tip]:focus-visible::after {
+    opacity: 1;
+    visibility: visible;
+}
+
+.spacer ~ button[data-tip]::after {
+    left: auto;
+    right: 0;
+    transform: none;
+}
+
+.spacer {
+    flex: 1;
+}
+
+.list {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+}
+
+.list.trash .row {
+    grid-template-columns: 28px 1fr 96px 150px 110px;
+}
+
+.row {
+    display: grid;
+    grid-template-columns: 28px 1fr 96px 150px;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--line);
+    cursor: default;
+}
+
+.row:last-child {
+    border-bottom: none;
+}
+.row:nth-child(even) {
+    background: var(--row-alt);
+}
+.row:hover {
+    background: var(--row-hover);
+}
+.row.selected {
+    background: var(--row-hover);
+}
+.row .name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    cursor: pointer;
+}
+.row .name span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.row .icon {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    color: var(--muted);
+}
+.row .size,
+.row .time,
+.row .by {
+    color: var(--muted);
+    font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.row.dir .icon {
+    color: var(--accent);
+}
+
+.row input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+.empty {
+    color: var(--muted);
+    text-align: center;
+    padding: 28px 0;
+}
+
+.statusbar {
+    display: flex;
+    gap: 8px;
+    padding: 8px 18px;
+    color: var(--muted);
+    font-size: 12.5px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+}
+
+.statusbar a {
+   color:  var(--accent);
+}
+
+.dropzone {
+    display: none;
+    border: 2px dashed var(--accent);
+    border-radius: 12px;
+    padding: 22px;
+    text-align: center;
+    color: var(--accent);
+    margin-bottom: 12px;
+    background: var(--row-hover);
+}
+
+.app.dragging .dropzone {
+    display: block;
+}
+
+.uploads {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    width: min(340px, calc(100vw - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 40;
+}
+
+.upload {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    box-shadow: var(--shadow);
+    font-size: 13px;
+}
+
+.upload .head {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+}
+.upload .head .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.upload .head .pct {
+    flex: none;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.upload .head button {
+    flex: none;
+    padding: 0 6px;
+}
+.upload .hint {
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.upload.failed .hint {
+    color: var(--danger);
+}
+
+.bar {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--line);
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.bar > i {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.15s;
+}
+
+.upload.failed .bar > i {
+    background: var(--danger);
+}
+
+.toast {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%);
+    background: var(--text);
+    color: var(--bg);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    z-index: 60;
+}
+
+.modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 10, 14, 0.62);
+    display: grid;
+    place-items: center;
+    z-index: 80;
+    padding: 24px;
+}
+
+.modal-body {
+    background: var(--panel);
+    border-radius: 14px;
+    padding: 16px;
+    max-width: min(1000px, 100%);
+    max-height: 90vh;
+    overflow: auto;
+    position: relative;
+    box-shadow: var(--shadow);
+}
+
+.modal-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    border: none;
+    background: transparent;
+    font-size: 20px;
+    line-height: 1;
+    padding: 4px 8px;
+}
+
+.modal img,
+.modal video {
+    max-width: 100%;
+    max-height: 78vh;
+    display: block;
+}
+.modal pre {
+    /* max-width: min(900px, 100%); */
+    max-height: 72vh;
+    overflow: auto;
+    font-size: 12.5px;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.preview-bar,
+.editor-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 10px;
+    padding-right: 28px;
+}
+
+.preview-name {
+    font-size: 13px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.editor-hint {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.preview-bar .preview-name {
+    margin-right: auto;
+}
+
+.editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: min(900px, calc(100vw - 80px));
+}
+
+.editor textarea {
+    width: 100%;
+    height: 68vh;
+    min-height: 240px;
+    resize: vertical;
+    padding: 10px 12px;
+    font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    outline: none;
+    white-space: pre;
+    overflow: auto;
+    tab-size: 4;
+}
+
+.editor textarea:focus {
+    border-color: var(--accent);
+}
+
+.editor .error {
+    margin: 0;
+    font-size: 13px;
+}
+
+@media (max-width: 640px) {
+    .row {
+        grid-template-columns: 24px 1fr 74px;
+    }
+    .list.trash .row {
+        grid-template-columns: 24px 1fr 74px;
+    }
+    .row .time,
+    .row .by {
+        display: none;
+    }
+    .browser {
+        padding: 12px;
+    }
+    .toolbar button {
+        padding: 6px 8px;
+    }
+}

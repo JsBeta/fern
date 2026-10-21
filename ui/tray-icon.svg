@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Simplified floppy for 16-32 px tray use: three shapes only, no fine detail. -->
+  <rect x="1" y="1" width="14" height="14" rx="2" fill="#20C997"></rect>
+  <path d="M9 1h4.5A1.5 1.5 0 0 1 15 2.5V6H9z" fill="#2C6DD2"></path>
+  <rect x="3.5" y="8.5" width="9" height="5" rx="0.75" fill="#F4FDFA"></rect>
+</svg>

@@ -1,0 +1,11 @@
+# MIME overrides. Copy to `fern.mime` next to fern.conf (or point at it with
+# `Fern.Mime <file>`). Later files never override earlier entries, so entries
+# listed here win over the built-in table.
+#
+# <extension> <type>
+mdx text/markdown; charset=utf-8
+yaml application/yaml; charset=utf-8
+#
+# <type> <extension> [<extension> ...]
+text/x-lua lua
+application/x-7z-compressed 7z cb7

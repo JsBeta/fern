@@ -1,0 +1,11 @@
+# Static CRT keeps the binary independent of any MinGW runtime DLL,
+# which matters for Windows 7 machines without a toolchain installed.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# ARMv7 hard-float Linux (Raspberry Pi 2/3 in 32-bit mode, most armhf routers
+# and NAS boxes). The linker comes from the ARM GNU toolchain; the static glibc
+# keeps fern a single self-contained file, just like the Windows build.
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-none-linux-gnueabihf-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]

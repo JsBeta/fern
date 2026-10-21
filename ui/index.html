@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>fern</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><span class="dot"></span><span id="brand">fern</span></div>
+      <div class="notice" id="notice" hidden></div>
+      <div class="who" id="who"></div>
+    </header>
+    <section class="login" id="login" hidden>
+      <form id="loginForm" autocomplete="on">
+        <h1>登录</h1>
+        <p class="hint" id="loginHint">输入用户名和密码以获取更多权限</p>
+        <label>用户名<input id="user" name="user" autocomplete="username" required></label>
+        <label>密码<input id="pass" name="pass" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="primary">登录</button>
+        <p class="error" id="loginError" hidden></p>
+      </form>
+    </section>
+    <main class="browser" id="browser" hidden>
+      <nav class="crumbs" id="crumbs"></nav>
+      <div class="toolbar-sentinel" id="toolbarSentinel"></div>
+      <div class="toolbar" id="toolbar">
+        <button id="btnUp" data-tip="上级目录" aria-label="上级目录"><svg class="ic" viewBox="0 0 24 24">
+            <path d="M12 19V6M5.5 12.5 12 6l6.5 6.5" />
+          </svg></button>
+        <button id="btnRefresh" data-tip="刷新" aria-label="刷新"><svg class="ic" viewBox="0 0 24 24">
+            <path d="M19 12a7 7 0 1 1-7-7c1.9 0 3.8.8 5.2 2.1L19 8M19 3.5V8h-4.5" />
+          </svg></button>
+        <span class="spacer"></span>
+        <button id="btnNewFolder" data-tip="新建文件夹" aria-label="新建文件夹" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path
+              d="M3.5 6.4a2.2 2.2 0 0 1 2.2-2.2h4.4l2 2.2h6.2a2.2 2.2 0 0 1 2.2 2.2v9.3a2.2 2.2 0 0 1-2.2 2.2H5.7a2.2 2.2 0 0 1-2.2-2.2zM12 10.5v6.2M9 13.6h6" />
+          </svg></button>
+        <button id="btnNewFile" data-tip="新建文件" aria-label="新建文件" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5M12 12v5M9.5 14.5h5" />
+          </svg></button>
+        <button id="btnUpload" data-tip="上传文件" aria-label="上传文件" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M12 16V4M7.5 8.5 12 4l4.5 4.5M4 19.5h16" />
+          </svg></button>
+        <button id="btnUploadDir" data-tip="上传文件夹" aria-label="上传文件夹" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path
+              d="M3.5 6.4a2.2 2.2 0 0 1 2.2-2.2h4.4l2 2.2h6.2a2.2 2.2 0 0 1 2.2 2.2v9.3a2.2 2.2 0 0 1-2.2 2.2H5.7a2.2 2.2 0 0 1-2.2-2.2zM12 16.2V9.7M9 12.7 12 9.7l3 3" />
+          </svg></button>
+        <button id="btnCopy" data-tip="复制" aria-label="复制" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M9 9h10v10H9zM16 9V6a1 1 0 0 0-1-1H6a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3" />
+          </svg></button>
+        <button id="btnPaste" data-tip="粘贴" aria-label="粘贴" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M9 4h6v3H9zM15 4.5h2a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h2" />
+          </svg></button>
+        <button id="btnRename" data-tip="重命名" aria-label="重命名" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M4 20l.9-3.6L16 5.3l2.7 2.7L7.6 19.1zM14.2 7.1l2.7 2.7" />
+          </svg></button>
+        <button id="btnDelete" data-tip="删除" aria-label="删除" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M9.5 10.5v6M14.5 10.5v6" />
+          </svg></button>
+        <button id="btnDownload" data-tip="下载" aria-label="下载" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M12 4.5V16M7.5 11.5 12 16l4.5-4.5M4 19.5h16" />
+          </svg></button>
+        <button id="btnTrash" data-tip="回收站" aria-label="回收站" hidden><svg id="iconTrashBin" class="ic"
+            viewBox="0 0 24 24">
+            <path
+              d="M14.4 4.2L19.6 13.4M19.8 9 19.6 13.4 15.8 11.4M17.2 17.6H6.6M10.3 20 6.6 17.6 10.3 15.3M4.2 13.4 9.5 4.2M5.6 6.3 9.5 4.2l.1 4.4" />
+          </svg><svg id="iconTrashBack" class="ic" viewBox="0 0 24 24" hidden>
+            <path d="M9.5 6 4 11.5 9.5 17M4 11.5h10.5a5.5 5.5 0 0 0 5.5-5.5V5" />
+          </svg></button>
+        <button id="btnRestore" data-tip="恢复" aria-label="恢复" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M5 12a7 7 0 1 0 7-7c-1.9 0-3.8.8-5.2 2.1L5 8M5 3.5V8h4.5" />
+          </svg></button>
+        <button id="btnPurge" data-tip="彻底删除" aria-label="彻底删除" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M4 7h16M9 7V4h6v3M6.5 7l1 13h9l1-13M9.5 10.5l5 5M14.5 10.5l-5 5" />
+          </svg></button>
+        <button id="btnEmptyTrash" data-tip="清空回收站" aria-label="清空回收站" hidden><svg class="ic" viewBox="0 0 24 24">
+            <path d="M4 7h16M6.5 7l1 13h9l1-13M4.5 19.5 19.5 4.5" />
+          </svg></button>
+        <input type="file" id="fileInput" multiple hidden>
+        <input type="file" id="dirInput" webkitdirectory directory multiple hidden>
+      </div>
+      <div class="dropzone" id="dropzone">松开鼠标即可上传到当前目录</div>
+      <div class="list" id="list"></div>
+      <p class="empty" id="empty" hidden>此目录为空</p>
+    </main>
+    <footer class="statusbar">
+      <span>
+        <span id="status"></span> / <span id="count"></span>
+      </span>
+      <span class="spacer"></span>
+      <span>Powered by <a target="_blank" href="https://github.com/JsBeta/fern">fern</a></span>
+    </footer>
+    <div class="uploads" id="uploads"></div>
+    <div class="toast" id="toast" hidden></div>
+    <div class="modal" id="modal" hidden>
+      <div class="modal-body">
+        <button class="modal-close" id="modalClose">×</button>
+        <div id="modalContent"></div>
+      </div>
+    </div>
+  </div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

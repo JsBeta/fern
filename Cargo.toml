@@ -1,0 +1,26 @@
+[package]
+name = "fern"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "A small, dependency-free HTTP file server"
+license = "MIT"
+
+[[bin]]
+name = "fern"
+path = "src/main.rs"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+overflow-checks = false
+debug = false
+
+[profile.size]
+inherits = "release"
+opt-level = "z"

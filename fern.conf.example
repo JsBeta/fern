@@ -1,0 +1,67 @@
+# fern configuration sample.
+# The file must be UTF-8. Directives and values are case-insensitive.
+# Lines starting with '#' are comments.
+
+# Directory shared on the network. Relative paths resolve against the
+# process working directory. Quote paths that contain spaces.
+# When omitted: the folder holding fern.exe if no configuration file was
+# found at all.
+# Example for Linux:
+# Fern.Root /mnt/file/
+# Example for Windows:
+# Fern.Root "D:\my share"
+
+# Bind address, repeatable. Forms: 4545 | 1.2.3.4:4545 | [::]:4545,Dual
+# Default when omitted: 4545 on all interfaces.
+Fern.Listen 4545
+
+# Permissions (uppercase; lowercase is accepted too):
+#   R read files      L list directories   U upload
+#   M modify/rename/delete                 S show hidden entries
+#   T web playback    D download hint
+Fern.User RLUMST user pass
+# Fern.User RL user2 pass2
+
+# Guest permissions (default: RL). Use 0 to disable guests completely.
+# Fern.Guest 0
+
+# Title shown in the browser tab and the top left corner (default: fern).
+# Fern.Title "我的网盘"
+
+# Optional notice shown as a pill in the header. Leave unset for no notice.
+# Fern.Notice "维护中，22:00 后恢复上传"
+
+# Hide the Windows tray icon.
+# Fern.Hide
+
+# Browser used by the tray icon on Windows.
+# Fern.Browser "C:\Program Files\Mozilla Firefox\firefox.exe"
+
+# Extra MIME mappings. One mapping per line:
+#   <extension> <type>
+#   <type> <extension> [<extension> ...]
+# `fern.mime` in the working directory and next to this file is loaded
+# automatically.
+# Fern.Mime mime.extra
+
+# Maximum simultaneous connections (default 128).
+# Fern.MaxConns 128
+
+# Write daily log files (fern-YYYY-MM-DD.log) into this directory.
+# Fern.LogDir logs
+
+# Recycle bin. Deleted entries move into <root>/.Trash/<id>/ (meta.json +
+# data/) instead of being removed, and are browsable from the "回收站"
+# toolbar button (#/__trash) with restore / purge / empty.
+#   Trash.Enabled   1 keeps deletions recoverable, 0 deletes immediately
+#                   (0 also hides the "回收站" button and turns the delete
+#                   prompt into a permanent-deletion warning)
+#   Trash.Max.Days  drop entries older than N days (0 = keep forever)
+#   Trash.Max.Size  total size cap in MB (0 = unlimited)
+#   Trash.Keep.Same keep at most N copies of the same file name
+# Cleanup runs at startup and after every delete batch.
+# Trash.Enabled 1
+# Trash.Max.Days 30
+# Trash.Max.Size 1024
+# Trash.Keep.Same 10
+
