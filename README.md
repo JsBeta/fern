@@ -22,7 +22,7 @@
 ## 亮点
 
 - **真的零依赖**：`[dependencies]` 为空。HTTP、JSON、URL 编解码、HTTP 日期、base36、MIME、Range、ZIP、gzip/deflate、日志全部手写，构建时不需要联网拉取任何 crate。
-- **体积优先**：`opt-level="z"` + fat LTO + `strip` + `panic="abort"`，Windows x86_64 产物约 **625 KiB**（640 000 字节），armv7 完全静态约 **1.03 MiB**；前端 4 个静态文件在构建期压成 gzip（58 KB → 19 KB）内嵌进二进制，首次请求时解压并缓存。
+- **体积优先**：`opt-level="z"` + fat LTO + `strip` + `panic="abort"`，Windows x86_64 产物约 **625 KiB**（640 000 字节），armv7 完全静态（musl）约 **678 KiB**；前端 4 个静态文件在构建期压成 gzip（58 KB → 19 KB）内嵌进二进制，首次请求时解压并缓存。
 - **无 async runtime**：`TcpListener` + 每连接一线程（默认上限 128、线程栈 128 KiB），调用栈清晰、便于调试，也方便在 Windows 7 这类老系统上做静态链接。
 - **协议细节齐全**：`Range` / `416` / `ETag` / `304`、`Expect: 100-continue`、HTTP/1.1 keep-alive（每连接 100 请求上限）、目录流式 ZIP、上传断点续传。
 - **安全默认**：路径穿越拦截（`..`、`%2e%2e`、`..%5c`、符号链接逃逸）、登录失败限流（5 分钟 5 次）、会话 `HttpOnly` + `SameSite=Lax`、JSON 请求体上限 4 MiB、请求头上限、120 s 读写超时、CSP 与 `X-Frame-Options: DENY`、`.Trash` 只经 API 访问。
@@ -67,33 +67,37 @@ cargo build --release --target x86_64-unknown-linux-musl
 cargo build --release --target aarch64-linux-android
 ```
 
-`.cargo/config.toml` 按目标三元组分别设置 rustflags（不能用全局 `[build] rustflags`，否则 `crt-static` 的语义会串到交叉目标上）；Windows 与 armv7 都带 `-C target-feature=+crt-static`，产物不依赖额外运行库。
+`.cargo/config.toml` 按目标三元组分别设置 rustflags（不能用全局 `[build] rustflags`，否则 `crt-static` 的语义会串到交叉目标上）；Windows 与两个 armv7 目标都带 `-C target-feature=+crt-static`，产物不依赖额外运行库。
 
 ### ARMv7（硬浮点 Linux 板卡）
 
-已实测可用的交叉编译链路：主机 Windows + [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)（`arm-none-linux-gnueabihf-gcc`，13.3.rel1 验证通过）。
+默认用 musl：许可为 MIT（静态分发二进制没有 LGPL 的「可重新链接」义务），且该目标自带 `crt1.o` / `libc.a` / `libunwind.a`（rustup 的 `lib/rustlib/armv7-unknown-linux-musleabihf/lib/self-contained/`），因此**不需要安装任何外部交叉工具链**，rustc 自带的 `rust-lld` 就能完成链接。
 
 ```powershell
 # 1) 只需一次：装目标标准库
-rustup target add armv7-unknown-linux-gnueabihf --toolchain 1.77.2-x86_64-pc-windows-gnu
+rustup target add armv7-unknown-linux-musleabihf --toolchain 1.77.2-x86_64-pc-windows-gnu
 
-# 2) 把工具链 bin 目录放进 PATH（没写进系统 PATH 时必须显式补）
-$env:Path = "E:\arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-linux-gnueabihf\bin;$env:Path"
-
-# 3) 构建
-cargo build --release --target armv7-unknown-linux-gnueabihf   # target\armv7-unknown-linux-gnueabihf\release\fern
+# 2) 构建（不需要改 PATH）
+cargo build --release --target armv7-unknown-linux-musleabihf   # target\armv7-unknown-linux-musleabihf\release\fern
 ```
 
-`.cargo/config.toml` 里已经把 `linker` 指向 `arm-none-linux-gnueabihf-gcc`，因此只要它在 `PATH` 上就能直接构建。若不想改 `PATH`，把该文件里的 `linker` 换成绝对路径（Windows 路径分隔符要转义成 `\\`）。
+`.cargo/config.toml` 里把 `linker` 指向 `rust-lld`（rustc 会自己去 sysroot 的 `lib/rustlib/<host>/bin/` 找，无需在 `PATH` 上），并保留 `-C target-feature=+crt-static`。
 
-产物为 ELF 32 位、ARM EABI5、hard-float、**完全静态**（`readelf -d` 无 `.dynamic`，也没有 `INTERP`），约 **1.03 MiB**（1 082 212 字节），可直接拷到目标机运行。体积差异来自 glibc 静态库（`libc.a`）本身。
+产物为 ELF 32 位、ARM EABI5、hard-float、**完全静态**（`readelf -d` 无 `.dynamic`，程序头无 `INTERP`），约 **678 KiB**（694 500 字节），`strip` 已生效，可直接拷到目标机运行。
 
-想要更小可以改成动态链接：在 `.cargo/config.toml` 的 `[target.armv7-unknown-linux-gnueabihf]` 里把 `rustflags` 换成 `-C target-feature=-crt-static`，产物降到约 **566 KiB**（579 440 字节），但要求目标机的 glibc 不低于构建时的版本（先在板上跑 `ldd --version` 对照）。
+**glibc 备选**：个别板卡需要 glibc 特有行为时，可改用 `armv7-unknown-linux-gnueabihf`。它需要 [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)（`arm-none-linux-gnueabihf-gcc`，13.3.rel1 验证通过）并把其 `bin` 放进 `PATH`：
+
+```powershell
+$env:Path = "E:\arm-gnu-toolchain-13.3.rel1-mingw-w64-i686-arm-none-linux-gnueabihf\bin;$env:Path"
+cargo build --release --target armv7-unknown-linux-gnueabihf
+```
+
+该产物同样完全静态，但体积 **1.03 MiB**（1 082 212 字节），且静态链接的是 glibc `libc.a`（LGPL-2.1-or-later），对外分发二进制时需提供可重新链接的手段。若把该段的 `rustflags` 换成 `-C target-feature=-crt-static` 则改为动态链接，产物降到约 **566 KiB**（579 440 字节），但要求目标机 glibc 不低于构建时版本（先在板上跑 `ldd --version` 对照）。
 
 验证方式（无 qemu/WSL 时只能在实机跑）：
 
 ```sh
-scp target/armv7-unknown-linux-gnueabihf/release/fern user@board:/tmp/
+scp target/armv7-unknown-linux-musleabihf/release/fern user@board:/tmp/
 ssh user@board '/tmp/fern --check -c /tmp/fern.conf && /tmp/fern -w /tmp/share -l 4545'
 ```
 
@@ -101,7 +105,7 @@ ssh user@board '/tmp/fern --check -c /tmp/fern.conf && /tmp/fern -w /tmp/share -
 
 仓库不提供 `rust-toolchain.toml`：在 Windows 上 `channel = "1.77.2"` 会被解析为 MSVC 宿主工具链（本机没有 `link.exe`），因此请按上面的命令显式安装并使用 gnu 工具链，或在单目录执行 `rustup override set 1.77.2-x86_64-pc-windows-gnu`。
 
-产物体积（x86_64-pc-windows-gnu，`opt-level="z"` + fat LTO + strip）：约 **598 KiB**（611 840 字节）。同样参数下「Hello world」的 Rust 静态链接二进制本身就有 253 KiB，因此 500 KiB 目标在当前技术选型下达不到——这是 Rust `std` + 静态 CRT 的下限。
+产物体积（x86_64-pc-windows-gnu，`opt-level="z"` + fat LTO + strip）：约 **625 KiB**（640 000 字节，其中 23.5 KB 是内嵌的 `fern.ico`）。同样参数下「Hello world」的 Rust 静态链接二进制本身就有 253 KiB，因此 500 KiB 目标在当前技术选型下达不到——这是 Rust `std` + 静态 CRT 的下限。
 
 体积上已经做过的两处取舍（都不会改变外部行为）：
 
@@ -286,7 +290,7 @@ cargo test     # 46 个单元测试 + 25 个端到端集成测试
 - 浏览器实测 `Fern.Title` / `Fern.Notice`：标签页标题与顶栏品牌文字随配置变化，通知为空时不占位。
 - 浏览器实测图标工具栏：15 个按钮全部为内联 SVG（`stroke: currentColor`，18 px，随深/浅色自动变色），逐个放大截图核对图形正确（新建文件夹为加粗外框的文件夹 + 加号，文件夹外框收窄加高至接近正方形、不再是扁长方形，上传文件夹为与「新建文件夹」一致的外框内嵌一支向上箭头（箭头完整收在文件夹轮廓内，不越出边框），回收站为三箭头循环三角且箭头与下一段箭杆之间留有明显缺口（放大后不粘连）、进入回收站后换成回旋返回箭头）；悬停 `::after` 气泡 `opacity` 由 `0` 变为 `1`、`content` 为对应 `data-tip`，气泡向下弹出不遮挡吸顶条；400 px 窄屏下工具栏 `scrollWidth === clientWidth`、页面 `documentElement.scrollWidth === clientWidth`，无横向溢出。状态类按钮随上下文切换：选中文件后出现「复制/重命名/删除/下载」，复制后「粘贴」变为「粘贴副本」（同时 `data-tip` 与 `aria-label` 更新），进入回收站后图标切为返回箭头、提示变为「返回文件」，回退后复原。
 - 内嵌资源 gzip 往返验证：单元测试比对 `include_bytes!(ui/*)` 与解压结果一致，集成测试 `serves_ui_and_assets` 校验响应体与源码逐字节相同；实测 `/`、`/assets/app.js`、`/assets/style.css`、`/assets/favicon.svg` 的 `Content-Length` 分别为 6379 / 40317 / 13000 / 873，`If-None-Match` 复验返回 `304`。
-- armv7 交叉编译通过（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）：1 082 212 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；在嵌入式设备上实机启动并输出 `--help` 正常。`x86_64-pc-windows-gnu` 宿主产物 640 000 字节（含 23.5 KB 图标），`cargo test` 46 + 25 全绿。
+- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：694 500 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 640 000 字节（含 23.5 KB 图标），`cargo test` 46 + 25 全绿。
 
 未验证 / 未实现：
 
@@ -302,4 +306,4 @@ cargo test     # 46 个单元测试 + 25 个端到端集成测试
 [Apache License 2.0](LICENSE) · Copyright 2026 JsBeta
 
 - 本仓库代码（`src/`、`build.rs`、`tests/`、`tools/`）与内嵌前端资源（`ui/`）均由本项目自行实现，无第三方 crate 依赖；分发或修改时请保留 `LICENSE`，如有 `NOTICE` 则一并保留。
-- 二进制产物以静态方式链接 C 运行库，需注意对应运行库的许可：`x86_64-unknown-linux-musl` 链接 musl（MIT），静态链接无额外义务；本文档给出的 armv7 链路（`arm-none-linux-gnueabihf-gcc` + `-C target-feature=+crt-static`）静态链接的是 glibc `libc.a`，glibc 属 LGPL-2.1-or-later，分发二进制时需一并提供可重新链接的手段（对应的目标文件，或源码 + 构建脚本）；Windows 目标的 `crt-static` 指向 MSVC/MinGW 运行库，建议在发布页注明工具链版本。
+- 二进制产物以静态方式链接 C 运行库，需注意对应运行库的许可：Windows 与默认的 armv7 链路（`armv7-unknown-linux-musleabihf`）分别指向 MSVC/MinGW 运行库与 musl（MIT），无源码或重链接义务，发布时注明工具链版本即可；若改用备选的 glibc 链路（`armv7-unknown-linux-gnueabihf` + `-C target-feature=+crt-static`），静态链接的是 glibc `libc.a`（LGPL-2.1-or-later），分发二进制时需一并提供可重新链接的手段（对应的目标文件，或源码 + 构建脚本）。

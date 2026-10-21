@@ -4,8 +4,20 @@
 rustflags = ["-C", "target-feature=+crt-static"]
 
 # ARMv7 hard-float Linux (Raspberry Pi 2/3 in 32-bit mode, most armhf routers
-# and NAS boxes). The linker comes from the ARM GNU toolchain; the static glibc
-# keeps fern a single self-contained file, just like the Windows build.
+# and NAS boxes).
+#
+# musl is the default armv7 build: it is MIT licensed (no relink obligation when
+# shipping static binaries, unlike glibc's LGPL) and the target ships its own
+# CRT objects and libc.a, so the bundled `rust-lld` is enough -- no external
+# cross toolchain has to be installed. The result is a fully static, stripped
+# ELF32 ARM hard-float executable of roughly 678 KiB.
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# glibc variant, kept as a fallback for boards that need glibc specific
+# behaviour. The linker comes from the Arm GNU toolchain; static glibc links
+# `libc.a` under the LGPL-2.1, which is why musl is preferred above.
 [target.armv7-unknown-linux-gnueabihf]
 linker = "arm-none-linux-gnueabihf-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]

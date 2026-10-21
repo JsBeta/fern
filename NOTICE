@@ -11,6 +11,7 @@ The following parts are original to this project:
   tools/          icon generation helper
   ui/             front-end (HTML/CSS/JS/SVG/ICO) embedded into the binary
 
-The produced binaries link a C runtime statically. Binary distributions should
-state the linking mode and, for glibc static builds, provide the means to relink
-(see the license section of README.md).
+The produced binaries link a C runtime statically: the Windows and default armv7
+(musl) builds carry no extra obligations beyond this notice. Only the optional
+glibc armv7 build links glibc under the LGPL-2.1, in which case distributors must
+also provide the means to relink (see the license section of README.md).
