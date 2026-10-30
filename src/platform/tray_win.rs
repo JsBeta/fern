@@ -53,7 +53,12 @@ const FALLBACK_ICON_SIZE: i32 = 16;
 static APP_ICON: &[u8] = include_bytes!("../../ui/fern.ico");
 
 const MENU_OPEN: usize = 1;
-const MENU_EXIT: usize = 2;
+const MENU_RESTART: usize = 2;
+const MENU_ABOUT: usize = 3;
+const MENU_EXIT: usize = 4;
+
+const MB_OK: u32 = 0x0000_0000;
+const MB_ICONINFORMATION: u32 = 0x0000_0040;
 
 #[repr(C)]
 struct Point {
@@ -155,6 +160,7 @@ extern "system" {
     ) -> i32;
     fn DestroyMenu(menu: HMENU) -> i32;
     fn GetCursorPos(point: *mut Point) -> i32;
+    fn MessageBoxW(window: HWND, text: LPCWSTR, caption: LPCWSTR, flags: u32) -> i32;
 }
 
 #[link(name = "shell32")]
@@ -264,6 +270,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
         WM_COMMAND => {
             match w & 0xffff {
                 MENU_OPEN => open_url(),
+                MENU_RESTART => restart_app(hwnd),
+                MENU_ABOUT => show_about(hwnd),
                 MENU_EXIT => exit_app(hwnd),
                 _ => {}
             }
@@ -291,9 +299,13 @@ unsafe fn show_menu(hwnd: HWND) {
     if menu.is_null() {
         return;
     }
-    let open = wide("Open in browser");
-    let exit = wide("Exit");
+    let open = wide("打开");
+    let restart = wide("重启");
+    let about = wide("关于");
+    let exit = wide("退出");
     AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
+    AppendMenuW(menu, MF_STRING, MENU_RESTART, restart.as_ptr());
+    AppendMenuW(menu, MF_STRING, MENU_ABOUT, about.as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
     AppendMenuW(menu, MF_STRING, MENU_EXIT, exit.as_ptr());
     let mut pt = Point { x: 0, y: 0 };
@@ -314,6 +326,8 @@ unsafe fn show_menu(hwnd: HWND) {
     PostMessageW(hwnd, WM_NULL, 0, 0);
     match choice as usize {
         MENU_OPEN => open_url(),
+        MENU_RESTART => restart_app(hwnd),
+        MENU_ABOUT => show_about(hwnd),
         MENU_EXIT => exit_app(hwnd),
         _ => {}
     }
@@ -352,6 +366,54 @@ unsafe fn exit_app(hwnd: HWND) -> ! {
     DestroyWindow(hwnd);
     crate::log::info("exit requested from the tray menu");
     std::process::exit(0);
+}
+
+/// Replaces the running process with a fresh copy of itself.
+///
+/// The same limitation as `exit_app` applies: the listener threads cannot be
+/// asked to stop, so the old process is torn down and a new one is started with
+/// the original command line. Windows keeps the listening socket reserved until
+/// this process is gone, so the replacement is told which pid to wait for
+/// (`--wait-pid`) before it tries to bind.
+unsafe fn restart_app(hwnd: HWND) -> ! {
+    remove_icon(hwnd);
+    DestroyWindow(hwnd);
+    crate::log::info("restart requested from the tray menu");
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            crate::log::error(&format!("restart failed: {}", e));
+            std::process::exit(1);
+        }
+    };
+    let mut cmd = crate::platform::command(&exe.to_string_lossy());
+    cmd.args(std::env::args_os().skip(1))
+        .arg("--wait-pid")
+        .arg(std::process::id().to_string());
+    if let Err(e) = cmd.spawn() {
+        crate::log::error(&format!("restart failed: {}", e));
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
+/// Shows the version and the served address in a message box.
+unsafe fn show_about(hwnd: HWND) {
+    let mut body = format!("fern {}\n\n", env!("CARGO_PKG_VERSION"));
+    if let Some(s) = state() {
+        let url = String::from_utf16_lossy(&s.url[..s.url.len().saturating_sub(1)]);
+        body.push_str(&url);
+        body.push('\n');
+    }
+    body.push_str("A small HTTP file server.");
+    let text = wide(&body);
+    let caption = wide("关于 fern");
+    MessageBoxW(
+        hwnd,
+        text.as_ptr(),
+        caption.as_ptr(),
+        MB_OK | MB_ICONINFORMATION,
+    );
 }
 
 /// Adds the notification icon. `url` is opened on double click, `tip` becomes

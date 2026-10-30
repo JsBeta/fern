@@ -138,6 +138,7 @@ ssh user@board '/tmp/fern --check -c /tmp/fern.conf && /tmp/fern -w /tmp/share -
 | `--install-service` / `--uninstall-service` | Windows 服务注册（`sc.exe`） |
 | `--add-firewall` / `--remove-firewall` | Windows 防火墙规则（`netsh`，规则名 `fern`） |
 | `--check` | 校验配置并打印生效值 |
+| `--wait-pid <pid>` | 内部参数：等该进程退出后再启动（托盘「重启」用它交接监听端口），不出现在 `--help` 中 |
 | `--help` / `--version` | 帮助 / 版本 |
 
 不带 `-` 的裸参数会被当作配置文件路径，所以 `fern --check ./fern.conf` 与 `fern -c ./fern.conf --check` 等价（已同时给出 `-c` 时按冲突报错）。
@@ -273,7 +274,7 @@ Fern.Notice "每周日 02:00-03:00 停机维护"
 ## 6. 测试与验证状态
 
 ```powershell
-cargo test     # 46 个单元测试 + 25 个端到端集成测试
+cargo test     # 50 个单元测试 + 25 个端到端集成测试
 ```
 
 集成测试（`tests/integration.rs`）会真实启动编译出的二进制，覆盖：静态资源与 304、访客权限、Range/416/条件下载、目录 302、路径穿越、登录与文件管理（mkdir/rename/delete → `.Trash`）、复制（目录递归、同名递增、跨目录、权限与错误码）、新建空文件（重名 `409`、非法名称 `400`、权限）、回收站列表/恢复/冲突覆盖/清除与权限、分块续传与 409 偏移纠正、标题与通知配置（默认值与 `Fern.Title` / `Fern.Notice` 覆盖）、方法与路由守卫、Keep-alive 连接复用与关闭语义。
@@ -285,7 +286,7 @@ cargo test     # 46 个单元测试 + 25 个端到端集成测试
 - 浏览器实测首页渲染正常（顶栏权限、面包屑、工具栏、列表、状态栏）；`#/__trash` 回收站页面渲染、选中、恢复、彻底删除、清空与「返回文件」跳转均通过。
 - 浏览器实测工具栏吸顶：60 个文件的目录滚动 1400 px 后工具栏 `getBoundingClientRect().top` 恒为 `0`、`elementFromPoint` 命中的是工具栏而不是列表行，此时直接点「新建文件夹」按钮能触发；滚回顶部阴影消失。400 px 窄屏下工具栏换行成两行仍吸顶、无横向溢出、按钮可点。
 - 浏览器实测「复制」→「粘贴副本」在源目录生成 `hello - 副本.txt`，再次粘贴得到 `hello - 副本 (2).txt`；`Ctrl+X` → 切换目录 →「粘贴」的移动流程未受影响。
-- 托盘图标创建成功（日志 `tray icon added`），通知区域显示的是内嵌的 fern 图标而非系统通用图标；`ui/fern.ico` 的六个尺寸都能经 `CreateIconFromResourceEx` 还原成 `HICON`（16/24/32/48/256 实测逐一验证）。托盘菜单 `Exit` 会先移除图标再结束进程（日志 `exit requested from the tray menu`，退出码 0、端口立即释放），不会留下无图标的服务器继续监听。
+- 托盘图标创建成功（日志 `tray icon added`），通知区域显示的是内嵌的 fern 图标而非系统通用图标；`ui/fern.ico` 的六个尺寸都能经 `CreateIconFromResourceEx` 还原成 `HICON`（16/24/32/48/256 实测逐一验证）。托盘右键菜单自上而下为「打开 / 重启 / 关于 / 退出」（前三项之后一条分隔线）。「打开」用浏览器打开服务地址；「重启」先移除图标、结束当前进程，再以原命令行加 `--wait-pid <旧 pid>` 启动新实例（新实例等旧进程退出、端口释放后再绑定，且不再重复打开浏览器）；监听 socket 在 `bind` 后与 `try_clone` 后都会清掉 `HANDLE_FLAG_INHERIT`，否则子进程会继承旧监听句柄、自己 `bind` 必然得到 `WSAEADDRINUSE`（os error 10048），交接路径另有 20 次 × 150 ms 的 `AddrInUse` 重试兜底；实测 4803 与 80 端口各连续重启 3 次，每次都出现 `listening on ...`、HTTP 200、只有一个进程、无 `#32770` 错误弹窗；「关于」弹出 `MessageBoxW` 显示版本与服务地址；「退出」会先移除图标再结束进程（日志 `exit requested from the tray menu`，退出码 0、端口立即释放），不会留下无图标的服务器继续监听。
 - 无控制台行为：`release` 产物 PE 头 `Subsystem = 2`（GUI）；用 `Win32_Process.Create` 模拟资源管理器启动（父进程无控制台）后枚举该进程顶层窗口，只有隐藏的 `fern_tray_window` 与系统 IME 窗口，**没有** `ConsoleWindowClass`，即双击不弹黑框。从真实控制台运行 `--version` / `--check` 时输出正常落在该控制台（截图核对 `fern 0.1.0` 与六项生效值）；`Start-Process -RedirectStandardOutput` 也能拿到 `fern 0.1.0`，说明重定向句柄没有被 `SetStdHandle` 破坏。托盘「打开浏览器」走了 `CREATE_NO_WINDOW` 的 `cmd start`：触发前后桌面控制台窗口数不变，且日志里随即出现 `_api/session`、`_api/list` 请求，浏览器正常打开。
 - 浏览器实测 `Fern.Title` / `Fern.Notice`：标签页标题与顶栏品牌文字随配置变化，通知为空时不占位。
 - 浏览器实测图标工具栏：15 个按钮全部为内联 SVG（`stroke: currentColor`，18 px，随深/浅色自动变色），逐个放大截图核对图形正确（新建文件夹为加粗外框的文件夹 + 加号，文件夹外框收窄加高至接近正方形、不再是扁长方形，上传文件夹为与「新建文件夹」一致的外框内嵌一支向上箭头（箭头完整收在文件夹轮廓内，不越出边框），回收站为三箭头循环三角且箭头与下一段箭杆之间留有明显缺口（放大后不粘连）、进入回收站后换成回旋返回箭头）；悬停 `::after` 气泡 `opacity` 由 `0` 变为 `1`、`content` 为对应 `data-tip`，气泡向下弹出不遮挡吸顶条；400 px 窄屏下工具栏 `scrollWidth === clientWidth`、页面 `documentElement.scrollWidth === clientWidth`，无横向溢出。状态类按钮随上下文切换：选中文件后出现「复制/重命名/删除/下载」，复制后「粘贴」变为「粘贴副本」（同时 `data-tip` 与 `aria-label` 更新），进入回收站后图标切为返回箭头、提示变为「返回文件」，回退后复原。

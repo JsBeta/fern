@@ -12,7 +12,7 @@ mod win;
 #[cfg(windows)]
 mod tray_win;
 #[cfg(windows)]
-pub use win::{after_start, prepare, run_action};
+pub use win::{after_start, prepare, run_action, wait_for_pid};
 
 #[cfg(windows)]
 pub use console_win::{attach as attach_console, report as report_fatal};
@@ -30,6 +30,10 @@ pub use other::{after_start, prepare, run_action};
 /// No-op: only the Windows build is windowless.
 #[cfg(not(windows))]
 pub fn attach_console() {}
+
+/// No-op: process handover only matters for the Windows tray restart.
+#[cfg(not(windows))]
+pub fn wait_for_pid(_pid: u32) {}
 
 /// Writes a fatal startup error to stderr.
 #[cfg(not(windows))]

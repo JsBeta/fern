@@ -134,3 +134,32 @@ fn uninstall_service() -> Result<(), String> {
 pub fn describe(action: Action) -> &'static str {
     action_name(action)
 }
+
+/// Blocks until the process `pid` has exited, or a few seconds have passed.
+///
+/// Used by the tray "restart" item: Windows keeps the listening socket
+/// reserved until the old process is gone, so the replacement has to wait
+/// before it can bind the same port.
+pub fn wait_for_pid(pid: u32) {
+    use std::ffi::c_void;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const WAIT_TIMEOUT_MS: u32 = 10_000;
+
+    type HANDLE = *mut c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> HANDLE;
+        fn WaitForSingleObject(handle: HANDLE, ms: u32) -> u32;
+        fn CloseHandle(handle: HANDLE) -> i32;
+    }
+
+    unsafe {
+        let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return;
+        }
+        WaitForSingleObject(handle, WAIT_TIMEOUT_MS);
+        CloseHandle(handle);
+    }
+}

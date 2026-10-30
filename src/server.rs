@@ -33,6 +33,36 @@ pub struct Server {
 }
 
 pub fn bind_all(cfg: &Config) -> io::Result<Vec<TcpListener>> {
+    bind_all_retry(cfg, 0, Duration::from_millis(0))
+}
+
+/// Binds every configured address, retrying `retries` times with `delay`
+/// between attempts while a port is still in use.
+///
+/// A tray restart spawns the replacement before the old process is gone, so the
+/// old sockets can outlive `bind_all` by a few milliseconds.
+pub fn bind_all_retry(
+    cfg: &Config,
+    retries: u32,
+    delay: Duration,
+) -> io::Result<Vec<TcpListener>> {
+    let mut attempt = 0;
+    loop {
+        match bind_all_once(cfg) {
+            Err(e) if attempt < retries && is_addr_in_use(&e) => {
+                attempt += 1;
+                std::thread::sleep(delay);
+            }
+            other => return other,
+        }
+    }
+}
+
+fn is_addr_in_use(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::AddrInUse || e.raw_os_error() == Some(10048)
+}
+
+fn bind_all_once(cfg: &Config) -> io::Result<Vec<TcpListener>> {
     let mut out = Vec::new();
     for spec in &cfg.listen {
         let (addr, dual) = split_listen(spec);
@@ -87,7 +117,10 @@ fn bind_one(spec: &str) -> io::Result<TcpListener> {
     let mut last_err = None;
     for addr in addrs {
         match TcpListener::bind(addr) {
-            Ok(l) => return Ok(l),
+            Ok(l) => {
+                disown(&l);
+                return Ok(l);
+            }
             Err(e) => last_err = Some(e),
         }
     }
@@ -98,6 +131,35 @@ fn bind_one(spec: &str) -> io::Result<TcpListener> {
         )
     }))
 }
+
+/// Clears the inherit flag on a listening socket.
+///
+/// A tray restart spawns the replacement process while the old one is still
+/// alive. `TcpListener::bind` already yields a non-inheritable handle, but
+/// `try_clone` (used by `Server::run` to hand the listener to an accept thread)
+/// duplicates it as inheritable. The child then receives a copy, and its own
+/// `bind` fails with `WSAEADDRINUSE` (os error 10048) because the leaked handle
+/// keeps the port reserved until the child exits.
+#[cfg(windows)]
+fn disown(listener: &TcpListener) {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawSocket;
+
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+
+    unsafe {
+        SetHandleInformation(listener.as_raw_socket() as *mut c_void, HANDLE_FLAG_INHERIT, 0);
+    }
+}
+
+/// No handle inheritance on this platform.
+#[cfg(not(windows))]
+fn disown(_listener: &TcpListener) {}
 
 impl Server {
     pub fn new(cfg: Arc<Config>, listeners: Vec<TcpListener>) -> Self {
@@ -114,6 +176,9 @@ impl Server {
         let mut handles = Vec::new();
         for listener in self.listeners.iter() {
             let listener = listener.try_clone()?;
+            // `try_clone` produces a fresh inheritable handle; clear it so a
+            // restarting child never inherits the port reservation.
+            disown(&listener);
             let me = self.clone();
             handles.push(std::thread::spawn(move || me.accept_loop(listener)));
         }
@@ -467,6 +532,60 @@ mod tests {
         assert_eq!(split_listen("[::]:4545,Dual"), ("[::]:4545".into(), true));
         assert_eq!(split_listen("4545"), ("4545".into(), false));
         assert_eq!(split_listen("127.0.0.1:80,dual"), ("127.0.0.1:80".into(), true));
+    }
+
+    #[test]
+    fn detects_address_in_use() {
+        assert!(is_addr_in_use(&io::Error::from_raw_os_error(10048)));
+        assert!(is_addr_in_use(&io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "busy"
+        )));
+        assert!(!is_addr_in_use(&io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "denied"
+        )));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disown_clears_the_inherit_flag() {
+        use std::ffi::c_void;
+        use std::os::windows::io::AsRawSocket;
+
+        const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetHandleInformation(handle: *mut c_void, flags: *mut u32) -> i32;
+        }
+
+        fn inherit_flag(handle: *mut c_void) -> u32 {
+            let mut flags = 0u32;
+            assert_eq!(unsafe { GetHandleInformation(handle, &mut flags) }, 1);
+            flags & HANDLE_FLAG_INHERIT
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // `bind` hands out a non-inheritable handle, but `try_clone` (used by
+        // `Server::run` for the accept threads) duplicates it as inheritable,
+        // which is what leaked the port reservation into a restarted child.
+        let clone = listener.try_clone().unwrap();
+        let clone_handle = clone.as_raw_socket() as *mut c_void;
+        assert_ne!(
+            inherit_flag(clone_handle),
+            0,
+            "try_clone duplicates the handle as inheritable"
+        );
+
+        disown(&clone);
+
+        assert_eq!(inherit_flag(clone_handle), 0);
+        assert_eq!(
+            inherit_flag(listener.as_raw_socket() as *mut c_void),
+            0,
+            "the original handle stays non-inheritable"
+        );
     }
 
     #[test]

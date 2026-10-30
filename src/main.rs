@@ -24,6 +24,7 @@ mod zip;
 
 use config::Config;
 use std::sync::Arc;
+use std::time::Duration;
 
 const VERSION: &str = concat!("fern ", env!("CARGO_PKG_VERSION"));
 
@@ -47,15 +48,22 @@ fn main() {
         std::process::exit(2);
     }
 
-    let cfg = match Config::load(&opts) {
+    let mut cfg = match Config::load(&opts) {
         Ok(c) => c,
         Err(e) => {
             platform::report_fatal(&e);
             std::process::exit(2);
         }
     };
+    let handover = opts.wait_pid.is_some();
+    if let Some(pid) = opts.wait_pid {
+        // A tray restart hands the running instance over: wait for it to drop
+        // the listening sockets, and do not pop a second browser tab.
+        platform::wait_for_pid(pid);
+        cfg.open_browser = false;
+    }
 
-    match run(cfg) {
+    match run(cfg, handover) {
         Ok(()) => {}
         Err(e) => {
             platform::report_fatal(&e);
@@ -64,7 +72,7 @@ fn main() {
     }
 }
 
-fn run(cfg: Config) -> Result<(), String> {
+fn run(cfg: Config, handover: bool) -> Result<(), String> {
     log::init(&cfg);
 
     if let Some(action) = cfg.action {
@@ -83,7 +91,14 @@ fn run(cfg: Config) -> Result<(), String> {
         log::warn(&e);
     }
 
-    let listeners = server::bind_all(&cfg).map_err(|e| format!("cannot listen: {}", e))?;
+    // A restarted process may still race the old sockets for a few
+    // milliseconds, so only the handover path retries.
+    let listeners = if handover {
+        server::bind_all_retry(&cfg, 20, Duration::from_millis(150))
+    } else {
+        server::bind_all(&cfg)
+    }
+    .map_err(|e| format!("cannot listen: {}", e))?;
     load_mime_overrides(&cfg);
     let mut urls = Vec::new();
     for l in &listeners {

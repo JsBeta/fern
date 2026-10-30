@@ -27,6 +27,9 @@ pub struct Options {
     pub action: Option<Action>,
     pub log_dir: Option<PathBuf>,
     pub max_conns: Option<usize>,
+    /// Internal: wait for this pid to exit before starting (used by the tray
+    /// "restart" item so the old process can release the listening socket).
+    pub wait_pid: Option<u32>,
     pub errors: Vec<String>,
 }
 
@@ -72,6 +75,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Options {
             "--log-dir" => match it.next() {
                 Some(v) => o.log_dir = Some(PathBuf::from(v)),
                 None => o.errors.push("--log-dir requires a directory".into()),
+            },
+            "--wait-pid" => match it.next().as_deref().and_then(|v| v.parse().ok()) {
+                Some(pid) => o.wait_pid = Some(pid),
+                None => o.errors.push("--wait-pid requires a process id".into()),
             },
             "--install-service" => o.action = Some(Action::InstallService),
             "--uninstall-service" => o.action = Some(Action::UninstallService),
@@ -176,5 +183,19 @@ mod tests {
     fn unknown_option_still_rejected() {
         let o = parse(args(&["--nope"]));
         assert_eq!(o.errors, vec!["unknown option: --nope".to_string()]);
+    }
+
+    #[test]
+    fn wait_pid_is_parsed() {
+        let o = parse(args(&["--wait-pid", "1234"]));
+        assert!(o.errors.is_empty());
+        assert_eq!(o.wait_pid, Some(1234));
+    }
+
+    #[test]
+    fn wait_pid_rejects_non_numeric() {
+        let o = parse(args(&["--wait-pid", "abc"]));
+        assert_eq!(o.wait_pid, None);
+        assert_eq!(o.errors.len(), 1);
     }
 }
