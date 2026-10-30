@@ -933,14 +933,14 @@ async function putChunk(dir, name, blob, offset, total, restart, signal) {
   }
 }
 
-async function uploadOne(file, name) {
+async function uploadOne(file, name, base) {
   const total = file.size;
   const ui = uploadRow(name);
   const controller = new AbortController();
   const signal = controller.signal;
   ui.onCancel(() => controller.abort());
   // Snapshot the folder: browsing away mid-upload must not split the file.
-  const dir = state.path;
+  const dir = base || state.path;
   let offset = 0;
   let restart = false;
   let restarts = 0;
@@ -1008,17 +1008,116 @@ async function uploadOne(file, name) {
   }
 }
 
-async function uploadFiles(files) {
+// `dataTransfer.files` flattens a dropped folder into a single 0 byte pseudo
+// file, which used to be uploaded as an empty file. The entry API exposes the
+// real hierarchy instead, so walk it before uploading.
+function entryFile(entry) {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+// `readEntries` returns at most one batch, so it must be called until empty.
+function readAllEntries(reader) {
+  return new Promise((resolve, reject) => {
+    const out = [];
+    const step = () => {
+      reader.readEntries((batch) => {
+        if (!batch.length) { resolve(out); return; }
+        for (const entry of batch) out.push(entry);
+        step();
+      }, reject);
+    };
+    step();
+  });
+}
+
+// Returns the number of files found so an empty folder can still be created.
+async function collectEntry(entry, prefix, out) {
+  if (entry.isFile) {
+    try {
+      const file = await entryFile(entry);
+      out.push({ kind: 'file', file, name: prefix + entry.name });
+      return 1;
+    } catch (e) {
+      return 0;
+    }
+  }
+  if (!entry.isDirectory) return 0;
+  const children = await readAllEntries(entry.createReader());
+  let files = 0;
+  for (const child of children) {
+    files += await collectEntry(child, prefix + entry.name + '/', out);
+  }
+  if (!files) out.push({ kind: 'dir', name: prefix + entry.name });
+  return files;
+}
+
+// Must read the entries synchronously during the drop event; only the batches
+// afterwards may be awaited.
+function droppedItems(dt) {
+  const out = [];
+  const roots = [];
+  if (dt.items && dt.items.length) {
+    for (const item of dt.items) {
+      if (typeof item.webkitGetAsEntry !== 'function') continue;
+      if (item.kind !== 'file') continue;
+      const entry = item.webkitGetAsEntry();
+      if (entry) roots.push(entry);
+    }
+  }
+  if (roots.some((entry) => entry.isDirectory)) {
+    return (async () => {
+      for (const entry of roots) await collectEntry(entry, '', out);
+      return out;
+    })();
+  }
+  const files = dt.files ? Array.from(dt.files) : [];
+  for (const file of files) {
+    out.push({ kind: 'file', file, name: file.name });
+  }
+  return Promise.resolve(out);
+}
+
+// Best effort: uploads create their parent folders, but a folder that holds no
+// files exists only if it is made explicitly, one segment at a time. `known`
+// remembers the segments already handled so one drop does not re-create them.
+async function ensureDir(rel, base, known) {
+  if (!can('M')) return;
+  let dir = base;
+  for (const part of rel.split('/')) {
+    if (!part) continue;
+    dir = joinPath(dir, part);
+    if (known.has(dir)) continue;
+    try {
+      await post('/mkdir', { path: parentPath(dir), name: part });
+      known.add(dir);
+    } catch (e) {
+      // 409 means the folder is already there, which is fine.
+      if (e.status !== 409) return;
+      known.add(dir);
+    }
+  }
+}
+
+async function uploadFiles(items) {
   if (!can('U')) { toast('没有上传权限'); return; }
   if (isTrashPath(state.path)) { toast('回收站中无法上传'); return; }
-  const items = Array.from(files);
-  if (!items.length) return;
-  for (const file of items) {
-    const name = file.webkitRelativePath || file.name;
+  const list = Array.from(items).map((item) => (item.kind ? item : {
+    kind: 'file',
+    file: item,
+    name: item.webkitRelativePath || item.name,
+  }));
+  if (!list.length) return;
+  const base = state.path;
+  const known = new Set();
+  for (const item of list) {
+    if (item.kind === 'dir') {
+      await ensureDir(item.name, base, known);
+      continue;
+    }
     try {
-      await uploadOne(file, name);
+      await uploadOne(item.file, item.name, base);
     } catch (e) {
-      if (e.name !== 'AbortError') toast('上传失败：' + file.name);
+      if (e.name !== 'AbortError') toast('上传失败：' + item.name);
     }
   }
   await load();
@@ -1178,7 +1277,11 @@ function bind() {
     ev.preventDefault();
     depth = 0;
     app.classList.remove('dragging');
-    if (ev.dataTransfer && ev.dataTransfer.files.length) uploadFiles(ev.dataTransfer.files);
+    if (!ev.dataTransfer) return;
+    // Read the entries now: the DataTransfer is emptied once the event returns.
+    droppedItems(ev.dataTransfer).then((items) => {
+      if (items.length) return uploadFiles(items);
+    }, () => {});
   });
 
   document.addEventListener('paste', (ev) => {
