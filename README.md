@@ -22,7 +22,7 @@
 ## 亮点
 
 - **真的零依赖**：`[dependencies]` 为空。HTTP、JSON、URL 编解码、HTTP 日期、base36、MIME、Range、ZIP、gzip/deflate、日志全部手写，构建时不需要联网拉取任何 crate。
-- **体积优先**：`opt-level="z"` + fat LTO + `strip` + `panic="abort"`，Windows x86_64 产物约 **625 KiB**（640 000 字节），armv7 完全静态（musl）约 **678 KiB**；前端 4 个静态文件在构建期压成 gzip（58 KB → 19 KB）内嵌进二进制，首次请求时解压并缓存。
+- **体积优先**：`opt-level="z"` + fat LTO + `strip` + `panic="abort"`，Windows x86_64 产物约 **628 KiB**（643 072 字节），armv7 完全静态（musl）约 **678 KiB**；前端 4 个静态文件在构建期压成 gzip（58 KB → 19 KB）内嵌进二进制，首次请求时解压并缓存。
 - **无 async runtime**：`TcpListener` + 每连接一线程（默认上限 128、线程栈 128 KiB），调用栈清晰、便于调试，也方便在 Windows 7 这类老系统上做静态链接。
 - **协议细节齐全**：`Range` / `416` / `ETag` / `304`、`Expect: 100-continue`、HTTP/1.1 keep-alive（每连接 100 请求上限）、目录流式 ZIP、上传断点续传。
 - **安全默认**：路径穿越拦截（`..`、`%2e%2e`、`..%5c`、符号链接逃逸）、登录失败限流（5 分钟 5 次）、会话 `HttpOnly` + `SameSite=Lax`、JSON 请求体上限 4 MiB、请求头上限、120 s 读写超时、CSP 与 `X-Frame-Options: DENY`、`.Trash` 只经 API 访问。
@@ -36,7 +36,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `build.rs` + `src/inflate.rs` | 构建期把 `ui/*` 压成 gzip（定长 Huffman），运行时解压内嵌资源 |
+| `build.rs` + `src/inflate.rs` | 构建期把 `ui/*` 压成 gzip（定长 Huffman），运行时解压内嵌资源；Windows 上再用 `windres` 把 `ui/fern.rc` 编成 `.rsrc` 链进 exe（文件图标） |
 | `src/main.rs` | 启动流程、日志初始化、监听与 MIME 覆盖装载 |
 | `src/server.rs` | 监听/接入/连接处理、路由、静态资源、文件响应（Range/ETag/304/416） |
 | `src/http.rs` | 请求解析、响应写出、`Expect: 100-continue` |
@@ -48,7 +48,7 @@
 | `src/config.rs` / `src/cli.rs` | `fern.conf` 与命令行解析、环境变量覆盖 |
 | `src/json.rs` / `src/range.rs` / `src/mime.rs` / `src/util.rs` / `src/log.rs` | 基础库 |
 | `src/platform/` | Windows（托盘/服务/防火墙/浏览器/控制台接管）、Unix（rlimit/chroot/setuid/syslog）、兜底 |
-| `ui/` + `tools/make-icon.ps1` | 前端资源源文件与图标。脚本用 .NET 自带的 `System.Drawing` 画出 16/20/24/32/48/256 六个尺寸写进 `ui/fern.ico`，托盘代码 `include_bytes!` 内嵌该文件；脚本不参与 `cargo build`，改图标几何时需同步 `ui/tray-icon.svg`（设计稿）与脚本，再手动重跑 |
+| `ui/` + `tools/make-icon.ps1` | 前端资源源文件与图标。脚本用 .NET 自带的 `System.Drawing` 画出 16/20/24/32/48/256 六个尺寸写进 `ui/fern.ico`；`ui/fern.rc` 声明 `1 ICON "fern.ico"`，`build.rs` 用 `windres` 把它编进 exe 的 `.rsrc`，托盘代码再用 `LoadImageW` 从同一份资源取出图标（不 `include_bytes!`，`.ico` 只存一份）；脚本不参与 `cargo build`，改图标几何时需同步 `ui/tray-icon.svg`（设计稿）与脚本，再手动重跑 |
 
 ---
 
@@ -57,7 +57,7 @@
 Rust 1.77.2 是最后一个支持 Windows 7 的稳定版；本项目按其要求使用 `*-pc-windows-gnu` 目标（无需 MSVC）。
 
 ```powershell
-# Windows（需 MinGW 链接器，scoop 的 gcc 即可）
+# Windows（需 MinGW 链接器与 windres，scoop 的 gcc 即可）
 rustup install 1.77.2-x86_64-pc-windows-gnu
 rustup default 1.77.2-x86_64-pc-windows-gnu
 cargo build --release          # target\release\fern.exe
@@ -83,7 +83,7 @@ cargo build --release --target armv7-unknown-linux-musleabihf   # target\armv7-u
 
 `.cargo/config.toml` 里把 `linker` 指向 `rust-lld`（rustc 会自己去 sysroot 的 `lib/rustlib/<host>/bin/` 找，无需在 `PATH` 上），并保留 `-C target-feature=+crt-static`。
 
-产物为 ELF 32 位、ARM EABI5、hard-float、**完全静态**（`readelf -d` 无 `.dynamic`，程序头无 `INTERP`），约 **678 KiB**（694 500 字节），`strip` 已生效，可直接拷到目标机运行。
+产物为 ELF 32 位、ARM EABI5、hard-float、**完全静态**（`readelf -d` 无 `.dynamic`，程序头无 `INTERP`），约 **680 KiB**（696 380 字节），`strip` 已生效，可直接拷到目标机运行。
 
 **glibc 备选**：个别板卡需要 glibc 特有行为时，可改用 `armv7-unknown-linux-gnueabihf`。它需要 [Arm GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)（`arm-none-linux-gnueabihf-gcc`，13.3.rel1 验证通过）并把其 `bin` 放进 `PATH`：
 
@@ -105,7 +105,7 @@ ssh user@board '/tmp/fern --check -c /tmp/fern.conf && /tmp/fern -w /tmp/share -
 
 仓库不提供 `rust-toolchain.toml`：在 Windows 上 `channel = "1.77.2"` 会被解析为 MSVC 宿主工具链（本机没有 `link.exe`），因此请按上面的命令显式安装并使用 gnu 工具链，或在单目录执行 `rustup override set 1.77.2-x86_64-pc-windows-gnu`。
 
-产物体积（x86_64-pc-windows-gnu，`opt-level="z"` + fat LTO + strip）：约 **625 KiB**（640 000 字节，其中 23.5 KB 是内嵌的 `fern.ico`）。同样参数下「Hello world」的 Rust 静态链接二进制本身就有 253 KiB，因此 500 KiB 目标在当前技术选型下达不到——这是 Rust `std` + 静态 CRT 的下限。
+产物体积（x86_64-pc-windows-gnu，`opt-level="z"` + fat LTO + strip）：约 **628 KiB**（643 072 字节，其中 `.rsrc` 段的 23.5 KB 是 `fern.ico`，同一份图标同时供资源管理器与托盘使用）。同样参数下「Hello world」的 Rust 静态链接二进制本身就有 253 KiB，因此 500 KiB 目标在当前技术选型下达不到——这是 Rust `std` + 静态 CRT 的下限。
 
 体积上已经做过的两处取舍（都不会改变外部行为）：
 
@@ -157,6 +157,8 @@ GUI 子系统默认拿不到 stdout/stderr。为了在终端里依然可用，�
 - 从资源管理器双击：`AttachConsole` 失败即静默返回，什么都不弹。
 - 致命错误（配置非法、端口被占用等）在没有控制台时改用 `MessageBoxW` 弹窗，不会「双击后毫无反应」。
 - 程序中派生的外部命令（`cmd start` 打开浏览器、`netsh`、`sc.exe`）统一加 `CREATE_NO_WINDOW`，不会闪现黑框。
+
+`fern.exe` 在资源管理器里的图标来自 `.rsrc` 段的 `RT_GROUP_ICON`（`ui/fern.rc` 声明、`build.rs` 用 `windres` 编译并 `cargo:rustc-link-arg` 链接），与托盘图标是**同一份** `ui/fern.ico`：托盘用 `LoadImageW(GetModuleHandleW(null), MAKEINTRESOURCE(1), IMAGE_ICON, ...)` 从自己的 `.rsrc` 取图，不再 `include_bytes!` 复制第二份，因此图标只占约 23.5 KB。换图标后若资源管理器仍显示旧图，是 shell 缓存所致（`ie4uinit.exe -show`），不是构建没生效。
 
 ---
 
@@ -286,13 +288,13 @@ cargo test     # 50 个单元测试 + 25 个端到端集成测试
 - 浏览器实测首页渲染正常（顶栏权限、面包屑、工具栏、列表、状态栏）；`#/__trash` 回收站页面渲染、选中、恢复、彻底删除、清空与「返回文件」跳转均通过。
 - 浏览器实测工具栏吸顶：60 个文件的目录滚动 1400 px 后工具栏 `getBoundingClientRect().top` 恒为 `0`、`elementFromPoint` 命中的是工具栏而不是列表行，此时直接点「新建文件夹」按钮能触发；滚回顶部阴影消失。400 px 窄屏下工具栏换行成两行仍吸顶、无横向溢出、按钮可点。
 - 浏览器实测「复制」→「粘贴副本」在源目录生成 `hello - 副本.txt`，再次粘贴得到 `hello - 副本 (2).txt`；`Ctrl+X` → 切换目录 →「粘贴」的移动流程未受影响。
-- 托盘图标创建成功（日志 `tray icon added`），通知区域显示的是内嵌的 fern 图标而非系统通用图标；`ui/fern.ico` 的六个尺寸都能经 `CreateIconFromResourceEx` 还原成 `HICON`（16/24/32/48/256 实测逐一验证）。托盘右键菜单自上而下为「打开 / 重启 / 关于 / 退出」（前三项之后一条分隔线）。「打开」用浏览器打开服务地址；「重启」先移除图标、结束当前进程，再以原命令行加 `--wait-pid <旧 pid>` 启动新实例（新实例等旧进程退出、端口释放后再绑定，且不再重复打开浏览器）；监听 socket 在 `bind` 后与 `try_clone` 后都会清掉 `HANDLE_FLAG_INHERIT`，否则子进程会继承旧监听句柄、自己 `bind` 必然得到 `WSAEADDRINUSE`（os error 10048），交接路径另有 20 次 × 150 ms 的 `AddrInUse` 重试兜底；实测 4803 与 80 端口各连续重启 3 次，每次都出现 `listening on ...`、HTTP 200、只有一个进程、无 `#32770` 错误弹窗；「关于」弹出 `MessageBoxW` 显示版本与服务地址；「退出」会先移除图标再结束进程（日志 `exit requested from the tray menu`，退出码 0、端口立即释放），不会留下无图标的服务器继续监听。
+- 托盘图标创建成功（日志 `tray icon added`），通知区域显示的是 `ui/fern.ico` 的 fern 图标而非系统通用图标；图标由 `windres` 编进 `.rsrc`（`RT_GROUP_ICON` id 1 + 6 个 `RT_ICON`），托盘用 `LoadImageW` 按 `SM_CXSMICON` 取出（16/20/24/32/48/256 六个尺寸都在组内，缩放交给系统）；`ExtractAssociatedIcon` 也能从 exe 取出 32×32 图标，即资源管理器显示的是同一份图标。托盘右键菜单自上而下为「打开 / 重启 / 关于 / 退出」（前三项之后一条分隔线）。「打开」用浏览器打开服务地址；「重启」先移除图标、结束当前进程，再以原命令行加 `--wait-pid <旧 pid>` 启动新实例（新实例等旧进程退出、端口释放后再绑定，且不再重复打开浏览器）；监听 socket 在 `bind` 后与 `try_clone` 后都会清掉 `HANDLE_FLAG_INHERIT`，否则子进程会继承旧监听句柄、自己 `bind` 必然得到 `WSAEADDRINUSE`（os error 10048），交接路径另有 20 次 × 150 ms 的 `AddrInUse` 重试兜底；实测 4803 与 80 端口各连续重启 3 次，每次都出现 `listening on ...`、HTTP 200、只有一个进程、无 `#32770` 错误弹窗；「关于」弹出 `MessageBoxW` 显示版本与服务地址；「退出」会先移除图标再结束进程（日志 `exit requested from the tray menu`，退出码 0、端口立即释放），不会留下无图标的服务器继续监听。
 - 无控制台行为：`release` 产物 PE 头 `Subsystem = 2`（GUI）；用 `Win32_Process.Create` 模拟资源管理器启动（父进程无控制台）后枚举该进程顶层窗口，只有隐藏的 `fern_tray_window` 与系统 IME 窗口，**没有** `ConsoleWindowClass`，即双击不弹黑框。从真实控制台运行 `--version` / `--check` 时输出正常落在该控制台（截图核对 `fern 0.1.0` 与六项生效值）；`Start-Process -RedirectStandardOutput` 也能拿到 `fern 0.1.0`，说明重定向句柄没有被 `SetStdHandle` 破坏。托盘「打开浏览器」走了 `CREATE_NO_WINDOW` 的 `cmd start`：触发前后桌面控制台窗口数不变，且日志里随即出现 `_api/session`、`_api/list` 请求，浏览器正常打开。
 - 浏览器实测 `Fern.Title` / `Fern.Notice`：标签页标题与顶栏品牌文字随配置变化，通知为空时不占位。
 - 浏览器实测图标工具栏：15 个按钮全部为内联 SVG（`stroke: currentColor`，18 px，随深/浅色自动变色），逐个放大截图核对图形正确（新建文件夹为加粗外框的文件夹 + 加号，文件夹外框收窄加高至接近正方形、不再是扁长方形，上传文件夹为与「新建文件夹」一致的外框内嵌一支向上箭头（箭头完整收在文件夹轮廓内，不越出边框），回收站为三箭头循环三角且箭头与下一段箭杆之间留有明显缺口（放大后不粘连）、进入回收站后换成回旋返回箭头）；悬停 `::after` 气泡 `opacity` 由 `0` 变为 `1`、`content` 为对应 `data-tip`，气泡向下弹出不遮挡吸顶条；400 px 窄屏下工具栏 `scrollWidth === clientWidth`、页面 `documentElement.scrollWidth === clientWidth`，无横向溢出。状态类按钮随上下文切换：选中文件后出现「复制/重命名/删除/下载」，复制后「粘贴」变为「粘贴副本」（同时 `data-tip` 与 `aria-label` 更新），进入回收站后图标切为返回箭头、提示变为「返回文件」，回退后复原。
 - 内嵌资源 gzip 往返验证：单元测试比对 `include_bytes!(ui/*)` 与解压结果一致，集成测试 `serves_ui_and_assets` 校验响应体与源码逐字节相同；实测 `/`、`/assets/app.js`、`/assets/style.css`、`/assets/favicon.svg` 的 `Content-Length` 分别为 6379 / 43682 / 13000 / 873，`If-None-Match` 复验返回 `304`。
 - 浏览器实测拖拽上传：从资源管理器把整个目录拖进列表，`webkitGetAsEntry()` 递归遍历（`readEntries` 每批 100 项需循环取空）后按相对路径 `PUT /_api/upload?name=site/assets/a.css` 逐文件上传，磁盘得到完整目录树 `site/{index.html,assets/{a.css,b.js},empty/}`，不再出现 0 KB 空文件；空目录 `site/empty` 由 `POST /_api/mkdir` 补齐（已存在时容忍 `409`）。目录 + 单个文件混拖、纯文本拖放均正常。
-- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：694 500 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 640 000 字节（含 23.5 KB 图标），`cargo test` 46 + 25 全绿。
+- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：696 380 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 643 072 字节（`.rsrc` 内 23.5 KB 图标，资源管理器与托盘共用同一份），`cargo test` 50 + 25 全绿。
 
 未验证 / 未实现：
 

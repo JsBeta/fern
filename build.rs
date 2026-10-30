@@ -5,10 +5,14 @@
 //! It emits a single fixed Huffman block with LZ77 back references, which the
 //! runtime decoder (`src/inflate.rs`) understands. Nothing else is required
 //! because every byte stays under our control.
+//!
+//! On Windows it also compiles `ui/fern.rc` with `windres` and links the result
+//! in, which is what gives `fern.exe` its file icon.
 
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 include!("src/deflate_tables.rs");
 
@@ -32,6 +36,61 @@ fn main() {
         let raw = fs::read(format!("ui/{name}")).unwrap_or_else(|e| panic!("ui/{name}: {e}"));
         let packed = gzip(&raw);
         fs::write(out.join(format!("{name}.gz")), &packed).unwrap_or_else(|e| panic!("{name}.gz: {e}"));
+    }
+    if target_is_windows_gnu() {
+        build_resources(&manifest_dir(), &out);
+    }
+}
+
+fn manifest_dir() -> PathBuf {
+    PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"))
+}
+
+/// Only the GNU target is handled: this project builds with MinGW, whose
+/// `windres` produces the COFF object the linker wants. An MSVC build would
+/// need `rc.exe` instead, so it is left without resources rather than failing.
+fn target_is_windows_gnu() -> bool {
+    env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu")
+}
+
+/// Compiles `ui/fern.rc` and links the object in, giving the executable its
+/// file icon. The tray loads the very same icon back out of `.rsrc` at run
+/// time, so `ui/fern.ico` is stored in the binary once.
+fn build_resources(manifest: &PathBuf, out: &PathBuf) {
+    let ui = manifest.join("ui");
+    println!("cargo:rerun-if-changed={}", ui.join("fern.rc").display());
+    println!("cargo:rerun-if-changed={}", ui.join("fern.ico").display());
+    println!("cargo:rerun-if-env-changed=WINDRES");
+
+    // `windres` defaults to a 32-bit i386 object, which the linker rejects for
+    // a 64-bit target, so the format has to be spelled out.
+    let target = match env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "pe-x86-64",
+        Ok("x86") => "pe-i386",
+        other => panic!("ui/fern.rc: no windres target for arch {other:?}"),
+    };
+
+    let object = out.join("fern_res.o");
+    let mut cmd = Command::new(env::var("WINDRES").unwrap_or_else(|_| "windres".into()));
+    cmd.arg("--include-dir").arg(&ui);
+    cmd.args(["--output-format", "coff", "--target", target]);
+    cmd.arg("--input").arg(ui.join("fern.rc"));
+    cmd.arg("--output").arg(&object);
+    run(cmd, "windres");
+    println!("cargo:rustc-link-arg={}", object.display());
+}
+
+fn run(mut cmd: Command, what: &str) {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let output = cmd.output().unwrap_or_else(|e| {
+        panic!("{what}: cannot run `{program}`: {e}\nIs MinGW's bin directory on PATH?")
+    });
+    if !output.status.success() {
+        panic!(
+            "{what} (`{program}`) failed:\n{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
 

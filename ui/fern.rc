@@ -1,0 +1,11 @@
+// Windows resources for fern.exe.
+//
+// `build.rs` compiles this with `windres` into a COFF object that is linked
+// into the binary, which is where Explorer gets the file icon and the shell
+// gets the window/tray artwork. The tray reads the same `RT_GROUP_ICON` back
+// at run time with `LoadImageW`, so the .ico is stored in the exe exactly once
+// (the image bytes live in `.rsrc`; nothing is `include_bytes!`d as well).
+//
+// Keep the id in sync with `RES_ICON` in src/platform/tray_win.rs.
+
+1 ICON "fern.ico"
