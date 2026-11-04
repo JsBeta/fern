@@ -364,14 +364,62 @@ body.trash-mode .uploads {
     cursor: default;
 }
 
+/* The header sits in the same grid so its columns line up with the rows. */
+.row.head {
+    background: var(--panel);
+    padding: 0 12px;
+}
+.row.head .col {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    padding: 10px 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+}
+.row.head .col:hover,
+.row.head .col:focus-visible {
+    background: transparent;
+    color: var(--accent);
+}
+.row.head .col .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.row.head .col .mark {
+    flex: none;
+    min-width: 10px;
+    font-size: 9px;
+    line-height: 1;
+}
+.row.head .col.sorted {
+    color: var(--accent);
+}
+/* Line the label up with the file name, past the 20px icon and its 8px gap. */
+.row.head .col[data-key="name"] {
+    padding-left: 28px;
+}
+
 .row:last-child {
     border-bottom: none;
 }
-.row:nth-child(even) {
+.row.alt {
     background: var(--row-alt);
 }
 .row:hover {
     background: var(--row-hover);
+}
+.row.head:hover {
+    background: var(--panel);
 }
 .row.selected {
     background: var(--row-hover);
@@ -655,7 +703,9 @@ body.trash-mode .uploads {
         grid-template-columns: 24px 1fr 74px;
     }
     .row .time,
-    .row .by {
+    .row .by,
+    .row.head .col[data-key="mtime"],
+    .row.head .col[data-key="deletedBy"] {
         display: none;
     }
     .browser {

@@ -16,6 +16,12 @@ const state = {
   busy: false,
   editorDirty: false,
   trash: null,
+  // Sort state per view. Directories always stay grouped above files; this
+  // only decides the order inside each group.
+  sort: {
+    files: { key: 'name', dir: 1 },
+    trash: { key: 'deletedAt', dir: -1 },
+  },
 };
 
 const el = (id) => document.getElementById(id);
@@ -232,16 +238,135 @@ function renderCrumbs() {
 const SVG_DIR = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
 const SVG_FILE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 
+// The header of each listing. `dir` is the direction used the first time the
+// column is clicked: names read best ascending, timestamps and sizes newest
+// or largest first.
+const FILE_COLUMNS = [
+  { key: 'name', label: '名称', dir: 1 },
+  { key: 'size', label: '大小', dir: -1 },
+  { key: 'mtime', label: '修改时间', dir: -1 },
+];
+
+const TRASH_COLUMNS = [
+  { key: 'name', label: '名称', dir: 1 },
+  { key: 'size', label: '大小', dir: -1 },
+  { key: 'deletedAt', label: '删除时间', dir: -1 },
+  { key: 'deletedBy', label: '删除者', dir: 1 },
+];
+
+function columnsFor(view) {
+  return view === 'trash' ? TRASH_COLUMNS : FILE_COLUMNS;
+}
+
+function compareByKey(a, b, key) {
+  if (key === 'name' || key === 'deletedBy') {
+    return String(a[key] || '').localeCompare(String(b[key] || ''), 'zh-CN',
+      { numeric: true, sensitivity: 'base' });
+  }
+  return (a[key] || 0) - (b[key] || 0);
+}
+
+// Folders stay grouped above files regardless of direction; the comparator
+// only orders the rows inside each group. Names break ties so the order never
+// depends on the arrival order of the API response.
+function sortEntries(items, sort, isDir) {
+  const key = sort.key;
+  const factor = sort.dir < 0 ? -1 : 1;
+  return items.slice().sort((a, b) => {
+    const aDir = !!isDir(a);
+    const bDir = !!isDir(b);
+    if (aDir !== bDir) return aDir ? -1 : 1;
+    const diff = compareByKey(a, b, key);
+    if (diff) return diff * factor;
+    return compareByKey(a, b, 'name');
+  });
+}
+
+function sortBy(view, key) {
+  const sort = state.sort[view];
+  if (sort.key === key) {
+    sort.dir = -sort.dir;
+  } else {
+    const col = columnsFor(view).find((c) => c.key === key);
+    sort.key = key;
+    sort.dir = (col && col.dir) || 1;
+  }
+  renderList();
+}
+
+function setSelected(keys, on) {
+  keys.forEach((key) => {
+    if (on) state.selected.add(key); else state.selected.delete(key);
+  });
+  renderList();
+}
+
+// The header checkbox and the selection keys it covers; the keys are the rows
+// currently drawn, so "select all" never touches entries the user cannot see.
+let headBox = null;
+let headKeys = [];
+
+function refreshSelectAll() {
+  if (!headBox) return;
+  const all = headKeys.length > 0 && headKeys.every((key) => state.selected.has(key));
+  const some = headKeys.some((key) => state.selected.has(key));
+  headBox.checked = all;
+  headBox.indeterminate = !all && some;
+  headBox.title = all ? '取消全选' : '全选';
+  headBox.setAttribute('aria-label', headBox.title);
+}
+
+function renderHead(view, sort, keys) {
+  headKeys = keys;
+  const head = document.createElement('div');
+  head.className = 'row head';
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  // Kept in place (not hidden) so the grid columns stay aligned when the
+  // directory is empty.
+  box.disabled = keys.length === 0;
+  box.onclick = (ev) => {
+    ev.stopPropagation();
+    setSelected(keys, box.checked);
+  };
+  headBox = box;
+  head.appendChild(box);
+  refreshSelectAll();
+  columnsFor(view).forEach((col) => {
+    const active = col.key === sort.key;
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'col' + (active ? ' sorted' : '');
+    cell.dataset.key = col.key;
+    cell.title = active
+      ? '按' + col.label + '排序，点击反向'
+      : '点击按' + col.label + '排序';
+    const label = document.createElement('span');
+    label.className = 'text';
+    label.textContent = col.label;
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.textContent = active ? (sort.dir < 0 ? '▼' : '▲') : '';
+    cell.appendChild(label);
+    cell.appendChild(mark);
+    cell.onclick = () => sortBy(view, col.key);
+    head.appendChild(cell);
+  });
+  return head;
+}
+
 function renderList() {
   const list = el('list');
   if (isTrashPath(state.path)) { renderTrashList(); return; }
   list.className = 'list';
   list.textContent = '';
+  const rows = sortEntries(state.entries, state.sort.files, (e) => e.isDir);
   el('empty').textContent = '此目录为空';
-  el('empty').hidden = state.entries.length > 0;
-  state.entries.forEach((entry) => {
+  el('empty').hidden = rows.length > 0;
+  list.appendChild(renderHead('files', state.sort.files, rows.map((e) => e.name)));
+  rows.forEach((entry, index) => {
     const row = document.createElement('div');
-    row.className = 'row' + (entry.isDir ? ' dir' : '') +
+    row.className = 'row' + (index % 2 ? ' alt' : '') + (entry.isDir ? ' dir' : '') +
       (state.selected.has(entry.name) ? ' selected' : '');
 
     const box = document.createElement('input');
@@ -252,6 +377,7 @@ function renderList() {
       if (box.checked) state.selected.add(entry.name); else state.selected.delete(entry.name);
       row.classList.toggle('selected', box.checked);
       refreshToolbar();
+      refreshSelectAll();
     };
 
     const nameCell = document.createElement('div');
@@ -294,11 +420,13 @@ function renderTrashList() {
   list.className = 'list trash';
   list.textContent = '';
   const items = (state.trash && state.trash.items) || [];
+  const rows = sortEntries(items, state.sort.trash, (e) => e.isDir);
   el('empty').textContent = '回收站为空';
-  el('empty').hidden = items.length > 0;
-  items.forEach((item) => {
+  el('empty').hidden = rows.length > 0;
+  list.appendChild(renderHead('trash', state.sort.trash, rows.map((e) => e.id)));
+  rows.forEach((item, index) => {
     const row = document.createElement('div');
-    row.className = 'row' + (item.isDir ? ' dir' : '') +
+    row.className = 'row' + (index % 2 ? ' alt' : '') + (item.isDir ? ' dir' : '') +
       (state.selected.has(item.id) ? ' selected' : '');
 
     const box = document.createElement('input');
@@ -309,6 +437,7 @@ function renderTrashList() {
       if (box.checked) state.selected.add(item.id); else state.selected.delete(item.id);
       row.classList.toggle('selected', box.checked);
       refreshToolbar();
+      refreshSelectAll();
     };
 
     const nameCell = document.createElement('div');
