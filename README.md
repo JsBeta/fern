@@ -62,9 +62,8 @@ rustup install 1.77.2-x86_64-pc-windows-gnu
 rustup default 1.77.2-x86_64-pc-windows-gnu
 cargo build --release          # target\release\fern.exe
 
-# Linux / Android（同一份代码）
-cargo build --release --target x86_64-unknown-linux-musl
-cargo build --release --target aarch64-linux-android
+# armv7
+cargo build --release --target armv7-unknown-linux-musleabihf
 ```
 
 `.cargo/config.toml` 按目标三元组分别设置 rustflags（不能用全局 `[build] rustflags`，否则 `crt-static` 的语义会串到交叉目标上）；Windows 与两个 armv7 目标都带 `-C target-feature=+crt-static`，产物不依赖额外运行库。
