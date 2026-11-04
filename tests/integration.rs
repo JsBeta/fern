@@ -1072,6 +1072,70 @@ fn folder_download_ignores_range_requests() {
     assert_eq!(&resp.body[..4], b"PK\x03\x04");
 }
 
+/// Selecting several entries downloads one archive holding just those entries,
+/// which is why the folder prefix must not appear inside it.
+#[test]
+fn selection_download_streams_one_zip_of_the_chosen_entries() {
+    let h = Harness::start();
+    let cookie = h.login();
+    let auth = [("Cookie", cookie.as_str())];
+    for (name, data) in [
+        ("sel/a.txt", b"hello".as_slice()),
+        ("sel/b.txt", b"world".as_slice()),
+        ("sel/dir/c.bin", b"0123456789".as_slice()),
+    ] {
+        let resp = h.request_with(
+            "PUT",
+            &format!(
+                "/_api/upload?path=/&name={}&offset=0&total={}",
+                name,
+                data.len()
+            ),
+            data,
+            &auth,
+        );
+        assert_eq!(resp.status, 200, "{}", resp.text());
+    }
+
+    let resp = h.request_with(
+        "GET",
+        "/files/sel?zip=1&path=a.txt&path=dir",
+        b"",
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(resp.header("content-type"), Some("application/zip"));
+    let declared: usize = resp
+        .header("content-length")
+        .expect("length")
+        .parse()
+        .expect("numeric length");
+    assert_eq!(resp.body.len(), declared, "body must match Content-Length");
+    assert_eq!(&resp.body[..4], b"PK\x03\x04");
+    let raw = String::from_utf8_lossy(&resp.body).into_owned();
+    for name in ["a.txt", "dir/", "dir/c.bin"] {
+        assert!(raw.contains(name), "archive should contain {}", name);
+    }
+    for absent in ["sel/", "b.txt"] {
+        assert!(!raw.contains(absent), "archive must not contain {}", absent);
+    }
+
+    // Entries that leave the folder are dropped instead of being archived.
+    let resp = h.request_with(
+        "GET",
+        "/files/sel?zip=1&path=../escape&path=a.txt",
+        b"",
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let raw = String::from_utf8_lossy(&resp.body).into_owned();
+    assert!(raw.contains("a.txt"));
+    assert!(!raw.contains("escape"));
+
+    let resp = h.request_with("GET", "/files/sel?zip=1&path=../escape", b"", &auth);
+    assert_eq!(resp.status, 404, "{}", resp.text());
+}
+
 #[test]
 fn method_and_route_guards() {
     let h = Harness::start();

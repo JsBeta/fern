@@ -495,7 +495,8 @@ function refreshToolbar() {
   setTip(el('btnPaste'), state.clip && state.clip.mode === 'copy' ? '粘贴副本' : '粘贴');
   el('btnRename').hidden = trash || !modify || !one;
   el('btnDelete').hidden = trash || !modify || !any;
-  el('btnDownload').hidden = trash || !can('R') || !one;
+  el('btnDownload').hidden = trash || !can('R') || !any;
+  setTip(el('btnDownload'), any && !one ? '打包下载 ' + state.selected.size + ' 项' : '下载');
   el('btnTrash').hidden = !modify || !trashOn();
   setTip(el('btnTrash'), trash ? '返回文件' : '回收站');
   setHidden(el('iconTrashBin'), trash);
@@ -721,9 +722,22 @@ async function paste() {
 }
 
 function downloadSelected() {
-  const name = selectedNames()[0];
-  if (!name) return;
-  startDownload(name);
+  const names = selectedNames();
+  if (!names.length) return;
+  if (names.length === 1) {
+    startDownload(names[0]);
+    return;
+  }
+  // Several entries are packed by the server into one archive: repeating the
+  // `path` parameter narrows the zip down to the selection.
+  const query = names.map((n) => 'path=' + encodeURIComponent(n)).join('&');
+  const url = '/files' + encodePath(state.path) + '?zip=1&' + query;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '选中 ' + names.length + ' 项.zip';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 function isDirEntry(name) {

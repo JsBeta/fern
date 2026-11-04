@@ -193,6 +193,7 @@ MIME 覆盖文件每行 `<ext> <type>` 或 `<type> <ext> <ext>...`；工作目�
 | GET | `/assets/{app.js,style.css,favicon.svg}` | 静态资源（内容哈希 ETag + `Cache-Control: no-cache`，靠 304 校验） |
 | GET | `/files/<path>` | 文件下载，支持 `Range`、`If-None-Match`；带 `?download` 时 `Content-Disposition` 为 `attachment`，否则 `inline` |
 | GET/HEAD | `/files/<dir>?zip=1` | 将目录流式打包为 ZIP（`Content-Type: application/zip`，`Content-Disposition: attachment`），`Content-Length` 在响应头即给出，全部条目按存储（不压缩）方式写入；符号链接跳过；总大小 > 3.6 GB 返回 `413 too_large`，条目数 > 65000 返回 `413 too_many_entries`；生成的归档无稳定 ETag 且不支持 `Range`（`Cache-Control: no-store`） |
+| GET/HEAD | `/files/<dir>?zip=1&path=<name>&path=<name>` | 只打包该目录下**被选中的若干项**：`path` 可重复，每项按自身文件名成为归档顶层条目（目录递归包含子项），不带父目录前缀；解析失败、越界或落在 `.Trash` 的路径被忽略，全部无效时返回 `404 not_found`；限额与上一条相同 |
 | GET | `/_api/session` | 当前身份与权限，含 `trashEnabled`（决定前端是否显示「回收站」）、`title` / `notice`（界面标题与通知） |
 | POST | `/_api/login` | `{"user","pass"}` → `Set-Cookie` |
 | POST | `/_api/logout` | 清除会话 |
@@ -219,6 +220,8 @@ HTTP/1.1 默认保持连接（`Connection: keep-alive`，上限 100 请求/连�
 上传文件夹时 `name` 允许带 `/`（源自 `webkitRelativePath`，如 `GVMaker/data/a.dat`），目标子目录即使尚不存在也会自动创建，无需先手动新建。任何提前返回的错误（`403 forbidden`、`400 bad_name`、`409 is_directory` 等）都会先把请求体读完再回包，否则关闭仍带未读字节的连接会触发 TCP RST，浏览器只能报 `Failed to fetch` 而看不到 JSON 内容；前端据此把错误码翻译成中文提示（如「同名文件夹已存在」）。
 
 下载目录必须带 `?zip=1`：目录直链本身仍是 `302` 跳转到前端，浏览器会把跳转后的 HTML 页面当成文件保存下来（表现为下载到一个 `<目录名>.htm`）。前端选中目录时自动请求 `/files/<dir>?zip=1` 并追加 `.zip` 后缀作为保存文件名，选中普通文件则保持原链接与原名。
+
+勾选多项后「下载」按钮依然可用：后端按重复的 `path=` 把选中的文件与目录打进同一个 ZIP（顶层就是各自的文件名，不含当前目录名），保存为「选中 N 项.zip」。因此一次点击只产生一个下载，不会被浏览器的「多文件下载」拦截。
 
 内置前端资源始终 `Cache-Control: no-cache`，ETag 由资源内容编译期哈希得出（`<文件名>-<16 位十六进制>`），内容一变 ETag 必变，升级后浏览器不会继续沿用旧 UI。若升级后看到旧界面，说明浏览器仍持有旧版本发出的长缓存副本，强制刷新（`Ctrl+F5`）一次即可。
 

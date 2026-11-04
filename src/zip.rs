@@ -80,7 +80,25 @@ impl ZipStream {
             .unwrap_or_else(|| "download".into());
         let mut entries = Vec::new();
         walk(dir, &name, &mut entries)?;
+        ZipStream::from_entries(entries)
+    }
 
+    /// Archive holding only `items`, each stored under its own archive name.
+    ///
+    /// This is what a multi-selection download needs: several unrelated files
+    /// and folders land in one archive without their parent directory.
+    pub fn from_items(items: &[(PathBuf, String)]) -> Result<ZipStream, ZipError> {
+        let mut entries = Vec::new();
+        for (path, name) in items {
+            push_item(path, name, &mut entries)?;
+        }
+        ZipStream::from_entries(entries)
+    }
+
+    fn from_entries(entries: Vec<Entry>) -> Result<ZipStream, ZipError> {
+        if entries.len() > MAX_ENTRIES {
+            return Err(ZipError::TooManyEntries);
+        }
         let mut local_len = 0u64;
         let mut central_len = 0u64;
         for e in &entries {
@@ -265,6 +283,37 @@ impl Read for ZipStream {
             }
         }
     }
+}
+
+/// Adds one selected item (file or folder) under `name` in the archive.
+fn push_item(path: &Path, name: &str, out: &mut Vec<Entry>) -> Result<(), ZipError> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(m) => m,
+        // A selection can go stale between listing and downloading; skipping
+        // keeps the rest of the archive usable.
+        Err(_) => return Ok(()),
+    };
+    if meta.is_dir() {
+        return walk(path, name, out);
+    }
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let (dos_time, dos_date) = dos_datetime(&meta);
+    out.push(Entry {
+        name: name.to_string(),
+        path: path.to_path_buf(),
+        offset: 0,
+        is_dir: false,
+        size: meta.len(),
+        dos_time,
+        dos_date,
+        crc: 0,
+    });
+    if out.len() > MAX_ENTRIES {
+        return Err(ZipError::TooManyEntries);
+    }
+    Ok(())
 }
 
 fn walk(dir: &Path, prefix: &str, out: &mut Vec<Entry>) -> Result<(), ZipError> {

@@ -388,7 +388,18 @@ impl Server {
                     .header("Location", target)
                     .header("Content-Length", "0");
             }
-            return build_zip_response(&path);
+            let names: Vec<&str> = req
+                .query
+                .iter()
+                .filter(|(k, _)| k == "path")
+                .map(|(_, v)| v.as_str())
+                .collect();
+            if names.is_empty() {
+                return build_zip_response(&path);
+            }
+            // `?path=` repeats to archive just the selected entries, which is
+            // how a multi-selection download becomes one archive.
+            return build_selection_zip_response(&self.cfg.root, &path, &names);
         }
         build_file_response(req, &path, meta.len(), modified_secs(&meta))
     }
@@ -495,23 +506,65 @@ fn build_file_response(req: &Request, path: &Path, size: u64, mtime: u64) -> Res
 }
 
 fn build_zip_response(dir: &Path) -> Response {
-    let zip = match ZipStream::new(dir) {
-        Ok(z) => z,
-        Err(zip::ZipError::TooLarge) => {
-            return Response::error(413, "too_large", "folder is too large to archive")
-        }
-        Err(zip::ZipError::TooManyEntries) => {
-            return Response::error(413, "too_many_entries", "folder has too many entries")
-        }
-        Err(zip::ZipError::Io(_)) => {
-            return Response::error(500, "zip_failed", "folder could not be read")
-        }
-    };
-    let len = zip.len();
     let name = dir
         .file_name()
         .map(|n| format!("{}.zip", n.to_string_lossy()))
         .unwrap_or_else(|| "download.zip".into());
+    match ZipStream::new(dir) {
+        Ok(zip) => zip_response(zip, name),
+        Err(e) => zip_error(e, "folder"),
+    }
+}
+
+/// Archives the entries named by repeated `?path=` values instead of `dir`.
+fn build_selection_zip_response(root: &Path, dir: &Path, names: &[&str]) -> Response {
+    let trash = crate::trash::dir(root);
+    let mut items = Vec::new();
+    for name in names {
+        let path = match fsapi::resolve(dir, name) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if path.starts_with(&trash) || fsapi::ensure_inside(root, &path).is_err() {
+            continue;
+        }
+        let archive_name = match path.file_name() {
+            Some(n) => n.to_string_lossy().into_owned(),
+            None => continue,
+        };
+        items.push((path, archive_name));
+    }
+    if items.is_empty() {
+        return Response::error(404, "not_found", "nothing to archive");
+    }
+    let name = dir
+        .file_name()
+        .map(|n| format!("{}.zip", n.to_string_lossy()))
+        .unwrap_or_else(|| "download.zip".into());
+    match ZipStream::from_items(&items) {
+        Ok(zip) => zip_response(zip, name),
+        Err(e) => zip_error(e, "selection"),
+    }
+}
+
+fn zip_error(e: zip::ZipError, noun: &str) -> Response {
+    match e {
+        zip::ZipError::TooLarge => {
+            Response::error(413, "too_large", &format!("{} is too large to archive", noun))
+        }
+        zip::ZipError::TooManyEntries => Response::error(
+            413,
+            "too_many_entries",
+            &format!("{} has too many entries", noun),
+        ),
+        zip::ZipError::Io(_) => {
+            Response::error(500, "zip_failed", &format!("{} could not be read", noun))
+        }
+    }
+}
+
+fn zip_response(zip: ZipStream, name: String) -> Response {
+    let len = zip.len();
     Response::new(200)
         .header("Content-Type", "application/zip")
         .header(
