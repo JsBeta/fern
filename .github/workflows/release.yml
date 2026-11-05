@@ -1,0 +1,341 @@
+# Builds the release binaries and publishes them as a GitHub Release.
+#
+# Tag push (v0.1.0) -> test on Windows, build every target, create/update the
+# release. Manual run -> same, tagging the current commit if the tag is missing.
+#
+# Targets mirror README section 2: Windows x86_64 GNU (tray icon, Win7) and the
+# two fully static Linux builds. The Windows toolchain is pinned to 1.77.2 for
+# the same reason (1.77 is the last with Windows 7 support) and because the
+# project's .cargo/config.toml assumes a GNU host on Windows.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (default: v<version from Cargo.toml>)"
+        required: false
+        type: string
+      draft:
+        description: "Create the release as a draft"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.77.2"
+  RUST_TOOLCHAIN_WIN: "1.77.2-x86_64-pc-windows-gnu"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve version and tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from Cargo.toml
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::could not read [package] version from Cargo.toml"
+            exit 1
+          fi
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${{ github.ref_name }}"
+          else
+            tag="${{ inputs.tag }}"
+            [ -n "$tag" ] || tag="v$version"
+          fi
+
+          tag_version="${tag#v}"
+          if [ "$tag_version" != "$version" ]; then
+            echo "::error::tag '$tag' does not match Cargo.toml version '$version'"
+            exit 1
+          fi
+
+          case "$version" in
+            *-*) prerelease=true ;;
+            *)   prerelease=false ;;
+          esac
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (version $version, prerelease=$prerelease)"
+
+  test:
+    name: Test (Windows x86_64 GNU)
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }} (GNU host)
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN_WIN --profile minimal --no-self-update
+          # Applies to later steps via GITHUB_ENV, and to this one via the process env.
+          "RUSTUP_TOOLCHAIN=$env:RUST_TOOLCHAIN_WIN" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $env:RUSTUP_TOOLCHAIN = $env:RUST_TOOLCHAIN_WIN
+          rustc --version
+          cargo --version
+
+      - name: Set up MinGW (linker + windres)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+
+      - name: Verify the GNU toolchain
+        shell: pwsh
+        run: |
+          # build.rs shells out to windres and rustc links through gcc, so the
+          # MinGW64 bin directory has to win over MSYS2's usr/bin.
+          $dirs = @(
+            'C:\msys64\mingw64\bin',
+            'C:\ProgramData\mingw64\bin',
+            'C:\mingw64\bin',
+            'C:\tools\mingw64\bin'
+          )
+          $mingw = $dirs | Where-Object {
+            Test-Path (Join-Path $_ 'x86_64-w64-mingw32-gcc.exe')
+          } | Select-Object -First 1
+          if (-not $mingw) { throw 'MinGW not found; the *-pc-windows-gnu target cannot be built' }
+
+          $mingw | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $env:Path = "$mingw;$env:Path"
+
+          foreach ($tool in @('x86_64-w64-mingw32-gcc', 'windres')) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            if (-not $cmd) { throw "$tool not found on PATH; the GNU target cannot be built" }
+            Write-Host "$tool -> $($cmd.Source)"
+          }
+
+      - name: Run tests
+        shell: pwsh
+        run: cargo test --locked
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: [prepare, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64-gnu
+            os: windows-latest
+            target: x86_64-pc-windows-gnu
+            archive: zip
+          - name: linux-armv7-musleabihf
+            os: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+            archive: tar.gz
+          - name: linux-x86_64-musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PACKAGE: fern-${{ needs.prepare.outputs.version }}-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust and target (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN_WIN --profile minimal --no-self-update
+          "RUSTUP_TOOLCHAIN=$env:RUST_TOOLCHAIN_WIN" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $env:RUSTUP_TOOLCHAIN = $env:RUST_TOOLCHAIN_WIN
+          rustup target add ${{ matrix.target }} --toolchain $env:RUST_TOOLCHAIN_WIN
+          rustc --version
+
+      - name: Set up MinGW (linker + windres)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-gcc
+
+      - name: Verify the GNU toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # build.rs shells out to windres and rustc links through gcc, so the
+          # MinGW64 bin directory has to win over MSYS2's usr/bin.
+          $dirs = @(
+            'C:\msys64\mingw64\bin',
+            'C:\ProgramData\mingw64\bin',
+            'C:\mingw64\bin',
+            'C:\tools\mingw64\bin'
+          )
+          $mingw = $dirs | Where-Object {
+            Test-Path (Join-Path $_ 'x86_64-w64-mingw32-gcc.exe')
+          } | Select-Object -First 1
+          if (-not $mingw) { throw 'MinGW not found; the *-pc-windows-gnu target cannot be built' }
+
+          $mingw | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $env:Path = "$mingw;$env:Path"
+
+          foreach ($tool in @('x86_64-w64-mingw32-gcc', 'windres')) {
+            $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+            if (-not $cmd) { throw "$tool not found on PATH; the GNU target cannot be built" }
+            Write-Host "$tool -> $($cmd.Source)"
+          }
+
+      - name: Install Rust and target (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          echo "RUSTUP_TOOLCHAIN=${RUST_VERSION}" >> "$GITHUB_ENV"
+          rustup target add "${{ matrix.target }}" --toolchain "${RUST_VERSION}"
+          # rust-lld lives in the host sysroot; .cargo/config.toml names it as the
+          # armv7 linker, and it has to be reachable through PATH as well.
+          export RUSTUP_TOOLCHAIN="${RUST_VERSION}"
+          sysroot="$(rustc --print sysroot)"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          echo "$sysroot/lib/rustlib/$host/bin" >> "$GITHUB_PATH"
+          rustc --version
+
+      - name: Build
+        shell: bash
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+
+      - name: Smoke test the binary (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/fern"
+          file "$bin"
+          # Both Linux targets are meant to be fully static; a PT_INTERP segment
+          # would mean the link silently picked up a dynamic loader.
+          if readelf -l "$bin" | grep -q INTERP; then
+            echo "::error::$bin has a dynamic loader; expected a fully static binary"
+            exit 1
+          fi
+          case "${{ matrix.target }}" in
+            armv7-*)
+              # No armhf hardware on the runners; qemu-user only validates that
+              # the static ELF actually boots.
+              sudo apt-get install -y --no-install-recommends qemu-user-static || true
+              qemu-arm-static "$bin" --version || echo "::warning::could not run the armv7 binary under qemu"
+              ;;
+            *)
+              "$bin" --version
+              ;;
+          esac
+
+      - name: Smoke test the binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Release builds are windows_subsystem = "windows", so use
+          # Start-Process to get a reliable exit code instead of $LASTEXITCODE.
+          $exe = Resolve-Path "target/${{ matrix.target }}/release/fern.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "fern.exe --version exited with $($p.ExitCode)" }
+          Write-Host "fern.exe --version -> exit 0"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = Join-Path 'stage' $env:PACKAGE
+          New-Item -ItemType Directory -Force -Path $stage, 'dist' | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/fern.exe" $stage
+          Copy-Item 'fern.conf.example', 'fern.mime.example', 'LICENSE', 'NOTICE', 'README.md' $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/$env:PACKAGE.zip" -CompressionLevel Optimal
+          Get-ChildItem dist | Format-Table Name, Length
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "stage/${PACKAGE}" dist
+          install -m 0755 "target/${{ matrix.target }}/release/fern" "stage/${PACKAGE}/fern"
+          cp fern.conf.example fern.mime.example LICENSE NOTICE README.md "stage/${PACKAGE}/"
+          tar -C stage -czf "dist/${PACKAGE}.tar.gz" "${PACKAGE}"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      DRAFT: ${{ inputs.draft || false }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          # Globs expand before the redirect creates the file, so SHA256SUMS
+          # never lists itself, and the names stay relative for `sha256sum -c`.
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create or update the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          if [ "$DRAFT" = "true" ]; then flags+=(--draft); fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, refreshing its assets."
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "fern $VERSION" \
+              --generate-notes \
+              ${flags[@]+"${flags[@]}"}
+          fi
+          gh release view "$TAG"

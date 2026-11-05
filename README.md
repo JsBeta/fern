@@ -111,6 +111,34 @@ ssh user@board '/tmp/fern --check -c /tmp/fern.conf && /tmp/fern -w /tmp/share -
 - **前端资源构建期 gzip**：`build.rs` 用内置的定长 Huffman 压缩器（无第三方 crate）把 `ui/*` 压成 `OUT_DIR/*.gz`，`src/assets.rs` 用 `include_bytes!` 内嵌压缩后的数据，首次请求时由 `src/inflate.rs`（仅支持 stored / 定长 Huffman 块）解压到 `OnceLock` 缓存。55 KB 源码变成约 17 KB 常量，`ETag` 仍按内容计算，改动 UI 后自然失效。
 - **JSON 数字用整数**：内部 JSON 只与本项目前端交换，`size` / `mtime` 均为整数，因此 `Json::Num` 用 `i64`，省掉了 `core` 的浮点格式化表（约 39 KiB）。API 不接受小数与科学计数法（返回 `400 invalid_json`）。
 
+### 发布
+
+`.github/workflows/release.yml` 在推送 `v*` 标签时自动打包并创建 GitHub Release，也可在 Actions 页面手动触发（`workflow_dispatch`）。流程分四段：
+
+| Job | 运行环境 | 作用 |
+|---|---|---|
+| `prepare` | ubuntu-latest | 从 `Cargo.toml` 读版本号；标签与版本不符直接失败；版本含 `-`（如 `0.2.0-rc.1`）则标记为 prerelease |
+| `test` | windows-latest | `cargo test --locked`（GNU 工具链，与发布产物一致） |
+| `build` | windows-latest / ubuntu-latest | 矩阵构建三个目标并打包 |
+| `release` | ubuntu-latest | 汇总产物、生成 `SHA256SUMS`、创建或更新 Release |
+
+构建矩阵与产物命名（`fern-<版本>-<target>.zip|.tar.gz`，压缩包内含二进制、`fern.conf.example`、`fern.mime.example`、`LICENSE`、`NOTICE`、`README.md`）：
+
+| 目标 | 压缩包 | 说明 |
+|---|---|---|
+| `x86_64-pc-windows-gnu` | `.zip` | 静态 CRT，兼容 Windows 7；`windres` 编入图标 |
+| `armv7-unknown-linux-musleabihf` | `.tar.gz` | `rust-lld` 自链接，无需外部工具链 |
+| `x86_64-unknown-linux-musl` | `.tar.gz` | 静态链接 musl，单个文件即可运行 |
+
+发布步骤只用仓库内置的 `GITHUB_TOKEN`（工作流已声明 `permissions: contents: write`），无需配置额外 secret：
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+手动触发时可指定 `tag`（缺省 `v<Cargo.toml 版本>`，标签不存在会在当前提交上创建）和 `draft`（生成草稿 Release，便于先检查产物再发布）。
+
 ---
 
 ## 3. 运行
