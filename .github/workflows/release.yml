@@ -94,39 +94,59 @@ jobs:
         shell: pwsh
         run: |
           rustup toolchain install $env:RUST_TOOLCHAIN_WIN --profile minimal --no-self-update
+          # Applies to later steps via GITHUB_ENV, and to this one via the process env.
           "RUSTUP_TOOLCHAIN=$env:RUST_TOOLCHAIN_WIN" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $env:RUSTUP_TOOLCHAIN = $env:RUST_TOOLCHAIN_WIN
           rustc --version
           cargo --version
 
       - name: Ensure MinGW (linker + windres)
         shell: pwsh
         run: |
-          function Add-MingwToPath {
-            $candidates = @(
-              'C:\ProgramData\mingw64\bin',
-              'C:\mingw64\bin',
-              'C:\tools\mingw64\bin',
-              'C:\msys64\mingw64\bin'
-            )
-            foreach ($dir in $candidates) {
-              if (Test-Path (Join-Path $dir 'x86_64-w64-mingw32-gcc.exe')) {
-                Add-Content -Path $env:GITHUB_PATH -Value $dir
-                $env:Path = "$dir;$env:Path"
-                return $true
-              }
+          # build.rs shells out to windres and the GNU linker does the linking,
+          # so both have to come from the same MinGW64 installation. MSYS2's
+          # usr/bin ships an older cross gcc plus its own windres and is often
+          # already on PATH, hence the filtering below.
+          function Find-MingwBin {
+            param([string[]] $Candidates)
+
+            foreach ($dir in $Candidates) {
+              if ((Test-Path (Join-Path $dir 'x86_64-w64-mingw32-gcc.exe')) -and
+                  (Test-Path (Join-Path $dir 'windres.exe'))) { return $dir }
             }
-            return $false
+
+            # choco unpacks the mingw package somewhere below its lib directory
+            # and the exact layout differs between package versions.
+            $gcc = Get-ChildItem -Path "$env:ProgramData\chocolatey\lib" `
+              -Filter 'x86_64-w64-mingw32-gcc.exe' -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($gcc -and (Test-Path (Join-Path $gcc.DirectoryName 'windres.exe'))) {
+              return $gcc.DirectoryName
+            }
+            return $null
           }
 
-          if (-not (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue)) {
-            Add-MingwToPath | Out-Null
+          function Add-MingwToPath {
+            param([string] $Dir)
+
+            if (-not $env:Path.EndsWith(';')) { $env:Path += ';' }
+            $kept = @($env:Path.Split(';', [StringSplitOptions]::RemoveEmptyEntries) | Where-Object {
+              $trimmed = $_.TrimEnd('\')
+              $trimmed -ne $Dir.TrimEnd('\') -and $trimmed -notin @('C:\msys64\usr\bin', 'C:\msys64\usr\local\bin')
+            })
+            $env:Path = (@($Dir) + $kept) -join ';'
+            Add-Content -Path $env:GITHUB_PATH -Value $Dir
           }
-          if (-not (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue) -or
-              -not (Get-Command windres -ErrorAction SilentlyContinue)) {
+
+          $mingw = @('C:\msys64\mingw64\bin', 'C:\ProgramData\mingw64\bin', 'C:\mingw64\bin', 'C:\tools\mingw64\bin')
+          $bin = Find-MingwBin $mingw
+          if (-not $bin) {
             choco install mingw --no-progress -y
-            Add-MingwToPath | Out-Null
+            $bin = Find-MingwBin $mingw
           }
+          if (-not $bin) { throw 'MinGW (gcc + windres) not found and could not be installed; the GNU target cannot be built' }
 
+          Add-MingwToPath $bin
           foreach ($tool in @('x86_64-w64-mingw32-gcc', 'windres')) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             if (-not $cmd) { throw "$tool not found on PATH; the GNU target cannot be linked/built" }
@@ -169,6 +189,7 @@ jobs:
         run: |
           rustup toolchain install $env:RUST_TOOLCHAIN_WIN --profile minimal --no-self-update
           "RUSTUP_TOOLCHAIN=$env:RUST_TOOLCHAIN_WIN" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $env:RUSTUP_TOOLCHAIN = $env:RUST_TOOLCHAIN_WIN
           rustup target add ${{ matrix.target }} --toolchain $env:RUST_TOOLCHAIN_WIN
           rustc --version
 
@@ -176,32 +197,50 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          function Add-MingwToPath {
-            $candidates = @(
-              'C:\ProgramData\mingw64\bin',
-              'C:\mingw64\bin',
-              'C:\tools\mingw64\bin',
-              'C:\msys64\mingw64\bin'
-            )
-            foreach ($dir in $candidates) {
-              if (Test-Path (Join-Path $dir 'x86_64-w64-mingw32-gcc.exe')) {
-                Add-Content -Path $env:GITHUB_PATH -Value $dir
-                $env:Path = "$dir;$env:Path"
-                return $true
-              }
+          # build.rs shells out to windres and the GNU linker does the linking,
+          # so both have to come from the same MinGW64 installation. MSYS2's
+          # usr/bin ships an older cross gcc plus its own windres and is often
+          # already on PATH, hence the filtering below.
+          function Find-MingwBin {
+            param([string[]] $Candidates)
+
+            foreach ($dir in $Candidates) {
+              if ((Test-Path (Join-Path $dir 'x86_64-w64-mingw32-gcc.exe')) -and
+                  (Test-Path (Join-Path $dir 'windres.exe'))) { return $dir }
             }
-            return $false
+
+            # choco unpacks the mingw package somewhere below its lib directory
+            # and the exact layout differs between package versions.
+            $gcc = Get-ChildItem -Path "$env:ProgramData\chocolatey\lib" `
+              -Filter 'x86_64-w64-mingw32-gcc.exe' -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($gcc -and (Test-Path (Join-Path $gcc.DirectoryName 'windres.exe'))) {
+              return $gcc.DirectoryName
+            }
+            return $null
           }
 
-          if (-not (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue)) {
-            Add-MingwToPath | Out-Null
+          function Add-MingwToPath {
+            param([string] $Dir)
+
+            if (-not $env:Path.EndsWith(';')) { $env:Path += ';' }
+            $kept = @($env:Path.Split(';', [StringSplitOptions]::RemoveEmptyEntries) | Where-Object {
+              $trimmed = $_.TrimEnd('\')
+              $trimmed -ne $Dir.TrimEnd('\') -and $trimmed -notin @('C:\msys64\usr\bin', 'C:\msys64\usr\local\bin')
+            })
+            $env:Path = (@($Dir) + $kept) -join ';'
+            Add-Content -Path $env:GITHUB_PATH -Value $Dir
           }
-          if (-not (Get-Command x86_64-w64-mingw32-gcc -ErrorAction SilentlyContinue) -or
-              -not (Get-Command windres -ErrorAction SilentlyContinue)) {
+
+          $mingw = @('C:\msys64\mingw64\bin', 'C:\ProgramData\mingw64\bin', 'C:\mingw64\bin', 'C:\tools\mingw64\bin')
+          $bin = Find-MingwBin $mingw
+          if (-not $bin) {
             choco install mingw --no-progress -y
-            Add-MingwToPath | Out-Null
+            $bin = Find-MingwBin $mingw
           }
+          if (-not $bin) { throw 'MinGW (gcc + windres) not found and could not be installed; the GNU target cannot be built' }
 
+          Add-MingwToPath $bin
           foreach ($tool in @('x86_64-w64-mingw32-gcc', 'windres')) {
             $cmd = Get-Command $tool -ErrorAction SilentlyContinue
             if (-not $cmd) { throw "$tool not found on PATH; the GNU target cannot be linked/built" }
@@ -218,19 +257,15 @@ jobs:
           rustup target add "${{ matrix.target }}" --toolchain "${RUST_VERSION}"
           # rust-lld lives in the host sysroot; .cargo/config.toml names it as the
           # armv7 linker, and it has to be reachable through PATH as well.
+          export RUSTUP_TOOLCHAIN="${RUST_VERSION}"
           sysroot="$(rustc --print sysroot)"
           host="$(rustc -vV | sed -n 's/^host: //p')"
           echo "$sysroot/lib/rustlib/$host/bin" >> "$GITHUB_PATH"
           rustc --version
 
-      - name: Install musl tools (x86_64 Linux)
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
-          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
-
+      # No musl-tools needed: rustup's x86_64-unknown-linux-musl target ships
+      # self-contained crt objects and libc.a (Rust >= 1.71) and links them
+      # with the host cc.
       - name: Build
         shell: bash
         run: cargo build --locked --release --target "${{ matrix.target }}"
@@ -242,22 +277,34 @@ jobs:
           set -euo pipefail
           bin="target/${{ matrix.target }}/release/fern"
           file "$bin"
-          if [ "${{ matrix.target }}" = "armv7-unknown-linux-musleabihf" ]; then
-            # No armhf hardware on the runners; qemu-user only validates that the
-            # static ELF actually boots.
-            sudo apt-get install -y --no-install-recommends qemu-user-static || true
-            qemu-arm-static "$bin" --version || echo "::warning::could not run the armv7 binary under qemu"
-          else
-            "$bin" --version
-            ldd "$bin" 2>&1 || echo "::notice::no dynamic loader (fully static)"
+          # Both Linux targets are meant to be fully static; a PT_INTERP segment
+          # would mean the link silently picked up a dynamic loader.
+          if readelf -l "$bin" | grep -q INTERP; then
+            echo "::error::$bin has a dynamic loader; expected a fully static binary"
+            exit 1
           fi
+          case "${{ matrix.target }}" in
+            armv7-*)
+              # No armhf hardware on the runners; qemu-user only validates that
+              # the static ELF actually boots.
+              sudo apt-get install -y --no-install-recommends qemu-user-static || true
+              qemu-arm-static "$bin" --version || echo "::warning::could not run the armv7 binary under qemu"
+              ;;
+            *)
+              "$bin" --version
+              ;;
+          esac
 
       - name: Smoke test the binary (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & "target/${{ matrix.target }}/release/fern.exe" --version
-          if ($LASTEXITCODE -ne 0) { throw "fern.exe --version failed" }
+          # Release builds are windows_subsystem = "windows", so use
+          # Start-Process to get a reliable exit code instead of $LASTEXITCODE.
+          $exe = Resolve-Path "target/${{ matrix.target }}/release/fern.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "fern.exe --version exited with $($p.ExitCode)" }
+          Write-Host "fern.exe --version -> exit 0"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -267,7 +314,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage, 'dist' | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/fern.exe" $stage
           Copy-Item 'fern.conf.example', 'fern.mime.example', 'LICENSE', 'NOTICE', 'README.md' $stage
-          Compress-Archive -Path "$stage/*" -DestinationPath "dist/$env:PACKAGE.zip" -CompressionLevel Optimal
+          # Archive the directory itself so the zip keeps the same single
+          # top-level folder as the .tar.gz builds.
+          Compress-Archive -Path $stage -DestinationPath "dist/$env:PACKAGE.zip" -CompressionLevel Optimal
           Get-ChildItem dist | Format-Table Name, Length
 
       - name: Package (Linux)
@@ -312,7 +361,9 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum ./* > SHA256SUMS
+          # Globs expand before the redirect creates the file, so SHA256SUMS
+          # never lists itself, and the names stay relative for `sha256sum -c`.
+          sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
 
       - name: Create or update the release
@@ -320,8 +371,8 @@ jobs:
         run: |
           set -euo pipefail
           flags=()
-          [ "$PRERELEASE" = "true" ] && flags+=("--prerelease")
-          [ "$DRAFT" = "true" ] && flags+=("--draft")
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          if [ "$DRAFT" = "true" ]; then flags+=(--draft); fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, refreshing its assets."
@@ -331,6 +382,6 @@ jobs:
               --target "$GITHUB_SHA" \
               --title "fern $VERSION" \
               --generate-notes \
-              "${flags[@]}"
+              ${flags[@]+"${flags[@]}"}
           fi
           gh release view "$TAG"
