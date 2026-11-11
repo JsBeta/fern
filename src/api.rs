@@ -71,7 +71,7 @@ where
     if let Err(e) = fsapi::ensure_inside(&cfg.root, &dir) {
         return err_response(&e);
     }
-    if dir.starts_with(trash::dir(&cfg.root)) {
+    if trash::is_bin_path(&cfg.root, &dir) {
         return Response::error(403, "forbidden", "the recycle bin has no readable capacity");
     }
     // A directory that vanished between the listing and this request should not
@@ -184,7 +184,7 @@ pub fn list(cfg: &Config, id: &Identity, req: &Request) -> Response {
     }
     // The recycle bin is deliberately unreachable through the file API; it has
     // its own endpoints so entries can never be edited or downloaded in place.
-    if dir.starts_with(trash::dir(&cfg.root)) {
+    if trash::is_bin_path(&cfg.root, &dir) {
         return Response::error(
             403,
             "forbidden",
@@ -450,7 +450,6 @@ pub fn copy<R: Read>(
     if !dest_path.is_dir() {
         return Response::error(400, "not_directory", "destination is not a directory");
     }
-    let bin = trash::dir(&cfg.root);
     let mut copied = 0u32;
     let mut targets: Vec<Json> = Vec::new();
     let mut last_error: Option<Response> = None;
@@ -471,7 +470,10 @@ pub fn copy<R: Read>(
             None => continue,
         };
         // The bin and its bookkeeping files are never copied.
-        if path.starts_with(&bin) || fsapi::is_internal_name(&name) || name == fsapi::TRASH_DIR {
+        if trash::is_bin_path(&cfg.root, &path)
+            || fsapi::is_internal_name(&name)
+            || name == fsapi::TRASH_DIR
+        {
             last_error = Some(Response::error(403, "forbidden", "this entry cannot be copied"));
             continue;
         }

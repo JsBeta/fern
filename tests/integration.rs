@@ -702,6 +702,78 @@ fn trash_lists_restores_and_purges() {
 }
 
 #[test]
+fn trash_spans_mounted_volumes() {
+    let h = Harness::start();
+    let cookie = h.login();
+    let auth = [("Cookie", cookie.as_str())];
+
+    // Stand in for a partition mounted below the share root: the harness runs
+    // on a single filesystem, so the bin a real mount would create is written
+    // by hand here.
+    let mount = h.root.join("hdd1");
+    let bin = mount.join(".Trash");
+    let entry = bin.join("abc");
+    std::fs::create_dir_all(entry.join("data")).unwrap();
+    std::fs::create_dir_all(&mount).unwrap();
+    std::fs::write(entry.join("data").join("doc.txt"), b"body").unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    std::fs::write(
+        entry.join("meta.json"),
+        format!(
+            r#"{{"id":"abc","name":"doc.txt","origPath":"/hdd1/doc.txt","isDir":false,"size":4,"files":1,"partial":false,"deletedAt":{},"deletedBy":"admin","via":"delete"}}"#,
+            now
+        ),
+    )
+    .unwrap();
+
+    // The entry is listed with a volume qualified id and a volume aware path.
+    let resp = h.request_with("GET", "/_api/trash", b"", &auth);
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(json_num(&resp.text(), "total"), 1.0);
+    assert!(contains(&resp.text(), "\"id\":\"hdd1~abc\""), "{}", resp.text());
+    assert!(contains(&resp.text(), "\"path\":\"/hdd1/doc.txt\""), "{}", resp.text());
+
+    // A mounted bin is just as private as the root one.
+    let resp = h.request_with("GET", "/_api/list?path=/hdd1/.Trash", b"", &auth);
+    assert_eq!(resp.status, 403, "{}", resp.text());
+    let resp = h.request_with("GET", "/files/hdd1/.Trash/abc/data/doc.txt", b"", &auth);
+    assert_eq!(resp.status, 404, "{}", resp.text());
+    let resp = h.request_with(
+        "POST",
+        "/_api/copy",
+        br#"{"paths":["hdd1/.Trash"],"dest":"/"}"#,
+        &auth,
+    );
+    assert_eq!(resp.status, 403, "{}", resp.text());
+
+    // Restoring puts the entry back inside the volume it came from.
+    let resp = h.request_with(
+        "POST",
+        "/_api/trash/restore",
+        br#"{"ids":["hdd1~abc"]}"#,
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(std::fs::read(mount.join("doc.txt")).unwrap(), b"body");
+    assert!(!entry.exists());
+
+    // Permanent deletion resolves the tag the same way.
+    std::fs::create_dir_all(bin.join("def").join("data")).unwrap();
+    let resp = h.request_with(
+        "POST",
+        "/_api/trash/purge",
+        br#"{"ids":["hdd1~def"]}"#,
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(json_num(&resp.text(), "purged"), 1.0);
+    assert!(!bin.join("def").exists());
+}
+
+#[test]
 fn trash_disabled_deletes_immediately() {
     let h = Harness::start_env(&[("_TRASH_ENABLED", "0")]);
     let cookie = h.login();

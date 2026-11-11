@@ -50,9 +50,13 @@ Fern.User RLUMST user pass
 # Write daily log files (fern-YYYY-MM-DD.log) into this directory.
 # Fern.LogDir logs
 
-# Recycle bin. Deleted entries move into <root>/.Trash/<id>/ (meta.json +
-# data/) instead of being removed, and are browsable from the "回收站"
-# toolbar button (#/__trash) with restore / purge / empty.
+# Recycle bin. Deleted entries move into the .Trash of the volume they live
+# on (normally <root>/.Trash/<id>/, holding meta.json + data/) instead of being
+# removed, and are browsable from the "回收站" toolbar button (#/__trash) with
+# restore / purge / empty. If <root> contains mount points of its own (e.g.
+# root = /mnt with /mnt/hdd1 and /mnt/hdd2 on separate disks) each mount keeps
+# its own <mount>/.Trash, so a delete never has to rename across filesystems;
+# discovered mounts are remembered in <root>/.Trash/bins.json.
 #   Trash.Enabled   1 keeps deletions recoverable, 0 deletes immediately
 #                   (0 also hides the "回收站" button and turns the delete
 #                   prompt into a permanent-deletion warning)

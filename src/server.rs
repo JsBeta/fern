@@ -409,7 +409,7 @@ impl Server {
         if let Err(e) = fsapi::ensure_inside(&self.cfg.root, &path) {
             return Response::error(e.status(), e.code(), &e.message());
         }
-        if path.starts_with(crate::trash::dir(&self.cfg.root)) {
+        if crate::trash::is_bin_path(&self.cfg.root, &path) {
             return Response::error(404, "not_found", "file not found");
         }
         let meta = match std::fs::metadata(&path) {
@@ -558,14 +558,13 @@ fn build_zip_response(dir: &Path) -> Response {
 
 /// Archives the entries named by repeated `?path=` values instead of `dir`.
 fn build_selection_zip_response(root: &Path, dir: &Path, names: &[&str]) -> Response {
-    let trash = crate::trash::dir(root);
     let mut items = Vec::new();
     for name in names {
         let path = match fsapi::resolve(dir, name) {
             Ok(p) => p,
             Err(_) => continue,
         };
-        if path.starts_with(&trash) || fsapi::ensure_inside(root, &path).is_err() {
+        if crate::trash::is_bin_path(root, &path) || fsapi::ensure_inside(root, &path).is_err() {
             continue;
         }
         let archive_name = match path.file_name() {

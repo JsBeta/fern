@@ -12,7 +12,7 @@
 | 上传 | 拖拽上传、整目录上传、分块断点续传（`.fernpart` 分片，刷新或重试后自动续传）、取消即清理残留 |
 | 文件管理 | 新建文件夹/空文件、重命名、复制（目录递归，重名自动「- 副本 (2)」）、剪切移动、删除 |
 | 在线编辑 | UTF-8 文本读写，保留 BOM 与原权限位；`mtimeMs` 冲突检测，支持强制覆盖 |
-| 回收站 | 目录式 `.Trash/<id>/{meta.json,data/}`：浏览、恢复（可覆盖）、彻底删除、清空，按天数/同名份数/总容量自动淘汰 |
+| 回收站 | 按分区存放的目录式 `.Trash/<id>/{meta.json,data/}`：浏览、恢复（可覆盖）、彻底删除、清空，按天数/同名份数/总容量自动淘汰 |
 | 打包下载 | 目录流式 ZIP，存储式写入，`Content-Length` 在响应头即可知，边打包边发送 |
 | 访问控制 | `RLUMSTD` 字母权限，按用户与访客分别配置；登录失败限流、`HttpOnly` + `SameSite=Lax` 会话 |
 | 配置 | [`fern.conf`](./fern.conf.example)（`Fern.*` + `Trash.*`）、命令行参数、环境变量覆盖、[`fern.mime`](./fern.mime.example) 扩展 MIME 表 |
@@ -43,7 +43,7 @@
 | `src/api.rs` | `/_api/*` JSON 接口：会话、登录、列表、新建、重命名、复制、删除、上传、文本读写、回收站 |
 | `src/fsapi.rs` | 路径解析与越界防护、目录枚举、断点续传写入器 |
 | `src/disk.rs` | 指定目录所在卷的容量读数：Windows 走 `GetDiskFreeSpaceExW`，Unix 走 `df -Pk`（`statvfs` 的块计数器在 Linux/FreeBSD 是 `unsigned long`、在 Darwin 是 32 位，无法共用一份结构体定义）。按目录而不是按托管根查询，`/mnt` 下挂载 `/mnt/hdd1`、`/mnt/hdd2` 时各卷才会分别显示 |
-| `src/trash.rs` | 回收站：条目布局与 `meta.json`、移入/列表/恢复/清除/策略淘汰、旧扁平条目兼容 |
+| `src/trash.rs` | 回收站：按分区定位回收站目录（`bins.json` 登记 + 目录扫描）、条目布局与 `meta.json`、移入/列表/恢复/清除/策略淘汰、跨设备退化为复制、旧扁平条目兼容 |
 | `src/zip.rs` | 目录流式 ZIP 打包（存储式，`Content-Length` 预先可知） |
 | `src/auth.rs` | 用户校验、会话 token、失败次数限流 |
 | `src/config.rs` / `src/cli.rs` | `fern.conf` 与命令行解析、环境变量覆盖 |
@@ -231,13 +231,13 @@ MIME 覆盖文件每行 `<ext> <type>` 或 `<type> <ext> <ext>...`；工作目�
 | POST | `/_api/newfile` | `{"path","name"}` → `{"ok":true,"path":"/dir/name","name"}`；在 `path` 目录下新建**空文件**，拒绝含 `/`、`\`、`..` 或内部后缀（`.fernpart`/`.fernedit`）的名字（`400 bad_name`），已存在则 `409 exists`，从不覆盖（需 `m`） |
 | POST | `/_api/rename` | `{"from","to"}` |
 | POST | `/_api/copy` | `{"paths":[…],"dest":"/dir"}` → `{"copied":N,"paths":[…]}`；递归复制文件/目录，重名自动改为 `<名字> - 副本`、`<名字> - 副本 (2)`，故可直接粘贴回源目录；符号链接跳过，禁止复制 `.Trash` 与把目录复制进自身（`400 copy_into_self`）（需 `m`） |
-| POST | `/_api/delete` | `{"paths":[…]}` → 移入 `.Trash`；`Trash.Enabled 0` 时直接删除，响应带 `"permanent":true`（见 §5.1） |
+| POST | `/_api/delete` | `{"paths":[…]}` → 移入该路径**所在分区**的 `.Trash`（见 §5.1）；`Trash.Enabled 0` 时直接删除，响应带 `"permanent":true` |
 | PUT/POST | `/_api/upload?path=&name=&offset=&total=` | 原始字节流，`offset` 实现断点续传；偏移不符返回 `409 {"error":"offset_mismatch","offset":N,"total":T}`；带 `restart=1` 才显式丢弃已收分片 |
 | GET/HEAD | `/_api/upload?path=&name=` | 探测续传位置，返回 `{"offset":N,"exists":bool}`（`N` 为 `<name>.fernpart` 已有字节数） |
 | DELETE | `/_api/upload?path=&name=` | 丢弃取消的上传残留（删除 `<name>.fernpart`） |
 | GET/HEAD | `/_api/read?path=<path>` | 读取 UTF-8 文本供在线编辑，返回 `{"path","content","size","mtimeMs","bom","canEdit","maxBytes"}`；非文本 `415 not_text`，目录 `400 is_directory`，超过 2 MiB `413 too_large`（需 `r`） |
 | PUT/POST | `/_api/write` | `{"path","content","mtimeMs","force","bom"}` 原子写回，保留 BOM 与文件权限；`mtimeMs` 与服务器不符返回 `409 {"error":"conflict","mtimeMs":N}`，`force:true` 可强制覆盖（需 `m`） |
-| GET/HEAD | `/_api/trash?sort=&offset=&limit=` | 回收站列表，返回 `{"items":[…],"total","bytes","enabled","maxDays","maxBytes","keepSame"}`；每项含 `id,name,path,isDir,size,files,partial,deletedAt,deletedBy,via,legacy`（需 `m`） |
+| GET/HEAD | `/_api/trash?sort=&offset=&limit=` | 回收站列表（汇总根目录与各挂载点的回收站），返回 `{"items":[…],"total","bytes","enabled","maxDays","maxBytes","keepSame"}`；每项含 `id,name,path,isDir,size,files,partial,deletedAt,deletedBy,via,legacy`；`id` 对分回收站的条目带 `<tag>~` 前缀，回传给 restore/purge 时原样使用（需 `m`） |
 | POST | `/_api/trash/restore` | `{"ids":[…],"overwrite":false}` → `{"restored":N,"paths":[…],"failed":[…]}`；目标已存在且未 `overwrite` 时返回 `409 {"code":"exists",…}`，开启后原文件反向入站（需 `m`） |
 | POST | `/_api/trash/purge` | `{"ids":[…]}` → `{"purged":N}`，永久删除指定条目（需 `m`） |
 | POST | `/_api/trash/empty` | `{}` 或 `{"olderThanDays":N}` → `{"purged":N}`，清空回收站（需 `m`） |
@@ -260,7 +260,13 @@ HTTP/1.1 默认保持连接（`Connection: keep-alive`，上限 100 请求/连�
 
 ### 5.1 回收站
 
-删除的文件不会真正消失，而是移入 `<root>/.Trash/`，前端通过工具栏的「回收站」按钮进入（路由 `#/__trash`，不用 `/.trash` 以免与 Windows 大小写不敏感的 `.Trash` 目录冲突）。
+删除的文件不会真正消失，而是移入回收站，前端通过工具栏的「回收站」按钮进入（路由 `#/__trash`，不用 `/.trash` 以免与 Windows 大小写不敏感的 `.Trash` 目录冲突）。
+
+**按分区存放**：回收站跟着数据所在的卷走。共享目录本身有一份 `<root>/.Trash`，凡是被挂载到共享目录内部的分区（例如共享 `/mnt`，而 `/mnt/hdd1`、`/mnt/hdd2` 各自是独立挂载点）各有一份 `<挂载点>/.Trash`。重命名无法跨文件系统，所以删除 `<root>/hdd1/a.txt` 时文件落在 `/mnt/hdd1/.Trash`，而不是 `/mnt/.Trash`；万一两端确实跨了设备，会自动退化为「复制 + 删除」，不会再报 500。
+
+已发现的挂载点记在 `<root>/.Trash/bins.json` 的 `volumes` 数组里（根相对路径），下次启动不必再遍历目录树即可找回这些分回收站；扫描时也会顺带发现共享目录第一层的 `<root>/<磁盘>/.Trash`。
+
+分回收站里的条目 id 会带一个位置前缀，形如 `hdd1~l4k2p0`，前缀是挂载点路径的转义（`/` → `~1`，`~` → `~~`），`~` 之后是本地 id。根回收站的条目仍然是裸 id（`l4k2p0`），旧链接、旧书签照常可用。前端与 API 都只需原样回传这个 id。
 
 磁盘布局（每条删除记录一个目录，便于原子提交与按条恢复）：
 
@@ -270,11 +276,11 @@ HTTP/1.1 默认保持连接（`Connection: keep-alive`，上限 100 请求/连�
   data/<name>    # 原始文件，或整个目录树（保留内部结构）
 ```
 
-`<id>` 由删除时刻的 base36 秒级时间戳生成，同秒冲突时追加 `-N` 后缀。移动过程先写入 `.Trash/.tmp-<id>` 再原子重命名，中途断电不会留下半截条目；启动时会顺带清理超过 1 小时仍未完成的 `.tmp-*` 残留。
+`<id>` 由删除时刻的 base36 秒级时间戳生成，同秒冲突时追加 `-N` 后缀。移动过程先写入 `<bin>/.tmp-<id>` 再原子重命名，中途断电不会留下半截条目；启动时会顺带清理超过 1 小时仍未完成的 `.tmp-*` 残留。
 
 `meta.json` 丢失或损坏的条目仍会出现在列表中（标记 `legacy:true` / `partial:true`），可直接永久删除，但无法恢复原名。原版留下的扁平条目 `.<base36>.<name>` 也可列出、恢复与清除，且始终保持只读，不会被改写成新布局。
 
-`.Trash` 目录本身不对普通浏览开放：`GET /_api/list?path=/.Trash` 返回 `403`，`GET /files/.Trash/...` 返回 `404`，只能经 `/_api/trash*` 访问（需 `m` 权限）。
+回收站目录本身不对普通浏览开放：`GET /_api/list?path=/.Trash` 返回 `403`，`GET /files/.Trash/...` 返回 `404`，根目录与各挂载点下的 `.Trash` 都一样，只能经 `/_api/trash*` 访问（需 `m` 权限）。
 
 保留策略通过 `fern.conf` 或环境变量配置：
 
@@ -308,10 +314,12 @@ Fern.Notice "每周日 02:00-03:00 停机维护"
 ## 6. 测试与验证状态
 
 ```powershell
-cargo test     # 50 个单元测试 + 25 个端到端集成测试
+cargo test     # 57 个单元测试 + 28 个端到端集成测试
 ```
 
 集成测试（`tests/integration.rs`）会真实启动编译出的二进制，覆盖：静态资源与 304、访客权限、Range/416/条件下载、目录 302、路径穿越、登录与文件管理（mkdir/rename/delete → `.Trash`）、复制（目录递归、同名递增、跨目录、权限与错误码）、新建空文件（重名 `409`、非法名称 `400`、权限）、回收站列表/恢复/冲突覆盖/清除与权限、分块续传与 409 偏移纠正、标题与通知配置（默认值与 `Fern.Title` / `Fern.Notice` 覆盖）、方法与路由守卫、Keep-alive 连接复用与关闭语义。
+
+回收站的按分区逻辑在单元测试与集成测试里都覆盖：挂载点前缀 id 的编解码往返（含名称里本身带 `~` 的挂载点）、根回收站仍用裸 id、挂载点回收站里的旧扁平条目也会被打上位置前缀、手写一个 `hdd1/.Trash/abc` 后能列出并按 `/hdd1/doc.txt` 恢复、`bins.json` 登记后重启仍能找回、`is_bin_path` 对嵌套 `.Trash` 的识别，以及集成层面确认 `/hdd1/.Trash` 同样 403/404/不可复制。真实跨设备行为无法在单卷测试环境里复现，靠 `move_entry` 的 `EXDEV` 退化路径兜住。
 
 已验证：
 
