@@ -854,6 +854,35 @@ fn resumable_upload() {
 }
 
 #[test]
+fn upload_is_refused_when_the_volume_cannot_hold_it() {
+    let h = Harness::start();
+    let cookie = h.login();
+    let auth = [("Cookie", cookie.as_str())];
+
+    // 1 EiB cannot fit on any volume the test runs on, so the request must be
+    // rejected before the chunk is written instead of filling the disk.
+    let resp = h.request_with(
+        "PUT",
+        "/_api/upload?path=/&name=huge.bin&offset=0&total=1152921504606846976",
+        b"ABCDE",
+        &auth,
+    );
+    assert_eq!(resp.status, 507, "{}", resp.text());
+    assert!(contains(&resp.text(), "\"error\":\"no_space\""));
+    assert!(!h.root.join("huge.bin.fernpart").exists());
+
+    // The same offset is accepted once the volume has room for the rest.
+    let resp = h.request_with(
+        "PUT",
+        "/_api/upload?path=/&name=small.bin&offset=0&total=5",
+        b"ABCDE",
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(h.root.join("small.bin").metadata().unwrap().len(), 5);
+}
+
+#[test]
 fn upload_resume_keeps_partial_data() {
     let h = Harness::start();
     let cookie = h.login();

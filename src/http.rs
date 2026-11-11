@@ -283,6 +283,7 @@ pub fn status_text(status: u16) -> &'static str {
         429 => "Too Many Requests",
         500 => "Internal Server Error",
         501 => "Not Implemented",
+        507 => "Insufficient Storage",
         _ => "Unknown",
     }
 }

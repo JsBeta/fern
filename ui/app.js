@@ -1061,6 +1061,7 @@ const UPLOAD_ERRORS = {
   bad_offset: '分片偏移不正确',
   length_required: '请求缺少长度',
   incomplete_body: '连接中断',
+  no_space: '服务器磁盘空间不足',
   io_error: '服务器写入失败',
 };
 

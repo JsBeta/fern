@@ -17,11 +17,42 @@ pub enum FsError {
     BadPath,
     NotFound,
     Forbidden,
+    /// The volume cannot take the bytes. Reported separately from `Io` because
+    /// it is a capacity problem the user can act on, not a server fault.
+    NoSpace,
     Io(io::Error),
+}
+
+/// `ENOSPC` and its quota relatives. `io::ErrorKind::StorageFull` is not stable
+/// on the supported toolchain, so the raw platform codes are compared instead.
+#[cfg(windows)]
+fn is_no_space(e: &io::Error) -> bool {
+    // ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL
+    matches!(e.raw_os_error(), Some(39) | Some(112))
+}
+
+#[cfg(target_os = "linux")]
+fn is_no_space(e: &io::Error) -> bool {
+    // ENOSPC, EDQUOT
+    matches!(e.raw_os_error(), Some(28) | Some(122))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn is_no_space(e: &io::Error) -> bool {
+    // ENOSPC, EDQUOT
+    matches!(e.raw_os_error(), Some(28) | Some(69))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn is_no_space(_e: &io::Error) -> bool {
+    false
 }
 
 impl From<io::Error> for FsError {
     fn from(e: io::Error) -> Self {
+        if is_no_space(&e) {
+            return FsError::NoSpace;
+        }
         match e.kind() {
             io::ErrorKind::NotFound => FsError::NotFound,
             io::ErrorKind::PermissionDenied => FsError::Forbidden,
@@ -36,6 +67,7 @@ impl FsError {
             FsError::BadPath => 400,
             FsError::NotFound => 404,
             FsError::Forbidden => 403,
+            FsError::NoSpace => 507,
             FsError::Io(_) => 500,
         }
     }
@@ -45,6 +77,7 @@ impl FsError {
             FsError::BadPath => "bad_path",
             FsError::NotFound => "not_found",
             FsError::Forbidden => "forbidden",
+            FsError::NoSpace => "no_space",
             FsError::Io(_) => "io_error",
         }
     }
@@ -54,6 +87,7 @@ impl FsError {
             FsError::BadPath => "invalid path".into(),
             FsError::NotFound => "not found".into(),
             FsError::Forbidden => "permission denied".into(),
+            FsError::NoSpace => "not enough space on the volume".into(),
             FsError::Io(e) => e.to_string(),
         }
     }
@@ -502,5 +536,29 @@ mod tests {
         assert!(is_internal_name("a.fernpart"));
         assert!(!is_internal_name("a.txt"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn disk_full_is_reported_as_insufficient_storage() {
+        // ENOSPC differs per platform, so the codes are read from the same
+        // constants the helper uses.
+        #[cfg(windows)]
+        let code = 112;
+        #[cfg(unix)]
+        let code = 28;
+        #[cfg(not(any(windows, unix)))]
+        let code = 0;
+
+        let err: FsError = io::Error::from_raw_os_error(code).into();
+        if code == 0 {
+            assert!(matches!(err, FsError::Io(_)));
+            return;
+        }
+        assert!(matches!(err, FsError::NoSpace));
+        assert_eq!(err.status(), 507);
+        assert_eq!(err.code(), "no_space");
+        // Anything else keeps the generic mapping.
+        let other: FsError = io::Error::from(io::ErrorKind::PermissionDenied).into();
+        assert!(matches!(other, FsError::Forbidden));
     }
 }

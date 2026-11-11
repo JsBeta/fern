@@ -385,7 +385,9 @@ impl Server {
             ("/rename", "POST") => api::rename(&self.cfg, id, req, reader),
             ("/copy", "POST") => api::copy(&self.cfg, id, req, reader),
             ("/delete", "POST") => api::delete(&self.cfg, id, req, reader),
-            ("/upload", "PUT") | ("/upload", "POST") => api::upload(&self.cfg, id, req, reader),
+            ("/upload", "PUT") | ("/upload", "POST") => {
+                api::upload(&self.cfg, id, req, reader, |p| self.disk_space(p))
+            }
             ("/upload", "GET") | ("/upload", "HEAD") => api::upload_probe(&self.cfg, id, req),
             ("/upload", "DELETE") => api::upload_cancel(&self.cfg, id, req),
             ("/read", "GET") | ("/read", "HEAD") => api::read_text(&self.cfg, id, req),

@@ -241,7 +241,7 @@ MIME 覆盖文件每行 `<ext> <type>` 或 `<type> <ext> <ext>...`；工作目�
 | POST | `/_api/rename` | `{"from","to"}` |
 | POST | `/_api/copy` | `{"paths":[…],"dest":"/dir"}` → `{"copied":N,"paths":[…]}`；递归复制文件/目录，重名自动改为 `<名字> - 副本`、`<名字> - 副本 (2)`，故可直接粘贴回源目录；符号链接跳过，禁止复制 `.Trash` 与把目录复制进自身（`400 copy_into_self`）（需 `m`） |
 | POST | `/_api/delete` | `{"paths":[…]}` → 移入该路径**所在分区**的 `.Trash`（见 §5.1）；`Trash.Enabled 0` 时直接删除，响应带 `"permanent":true` |
-| PUT/POST | `/_api/upload?path=&name=&offset=&total=` | 原始字节流，`offset` 实现断点续传；偏移不符返回 `409 {"error":"offset_mismatch","offset":N,"total":T}`；带 `restart=1` 才显式丢弃已收分片 |
+| PUT/POST | `/_api/upload?path=&name=&offset=&total=` | 原始字节流，`offset` 实现断点续传；偏移不符返回 `409 {"error":"offset_mismatch","offset":N,"total":T}`；带 `restart=1` 才显式丢弃已收分片；收到第一个分片前先比对所在卷的可用空间，装不下剩余字节直接返回 `507 {"error":"no_space"}`，不写入任何数据 |
 | GET/HEAD | `/_api/upload?path=&name=` | 探测续传位置，返回 `{"offset":N,"exists":bool}`（`N` 为 `<name>.fernpart` 已有字节数） |
 | DELETE | `/_api/upload?path=&name=` | 丢弃取消的上传残留（删除 `<name>.fernpart`） |
 | GET/HEAD | `/_api/read?path=<path>` | 读取 UTF-8 文本供在线编辑，返回 `{"path","content","size","mtimeMs","bom","canEdit","maxBytes"}`；非文本 `415 not_text`，目录 `400 is_directory`，超过 2 MiB `413 too_large`（需 `r`） |
@@ -255,7 +255,9 @@ HTTP/1.1 默认保持连接（`Connection: keep-alive`，上限 100 请求/连�
 
 上传分片先写入 `<name>.fernpart`，收满 `total` 后同步并原子重命名为目标文件。`.fernpart` / `.fernedit` 属于服务端内部临时文件，目录列表一律按隐藏项处理（需 `S` 权限才可见）。取消上传会删除残留分片，因此断点续传只在「同一目录、同名文件」下生效。前端上传行底部的提示实时显示 `已传输 / 总大小` 与本会话平均速度，命中残留分片时额外标注「断点续传」，无需用户点击任何按钮。
 
-上传文件夹时 `name` 允许带 `/`（源自 `webkitRelativePath`，如 `GVMaker/data/a.dat`），目标子目录即使尚不存在也会自动创建，无需先手动新建。任何提前返回的错误（`403 forbidden`、`400 bad_name`、`409 is_directory` 等）都会先把请求体读完再回包，否则关闭仍带未读字节的连接会触发 TCP RST，浏览器只能报 `Failed to fetch` 而看不到 JSON 内容；前端据此把错误码翻译成中文提示（如「同名文件夹已存在」）。
+上传文件夹时 `name` 允许带 `/`（源自 `webkitRelativePath`，如 `GVMaker/data/a.dat`），目标子目录即使尚不存在也会自动创建，无需先手动新建。任何提前返回的错误（`403 forbidden`、`400 bad_name`、`409 is_directory`、`507 no_space` 等）都会先把请求体读完再回包，否则关闭仍带未读字节的连接会触发 TCP RST，浏览器只能报 `Failed to fetch` 而看不到 JSON 内容；前端据此把错误码翻译成中文提示（如「同名文件夹已存在」）。
+
+磁盘写满（`ENOSPC`）不再混在 `500 io_error` 里：先由 `/_api/upload` 的前置空间检查拦截（剩余字节 > 卷可用空间即 `507 no_space`），万一在写入途中触发，`FsError::NoSpace` 同样返回 `507`，前端提示「服务器磁盘空间不足」。
 
 下载目录必须带 `?zip=1`：目录直链本身仍是 `302` 跳转到前端，浏览器会把跳转后的 HTML 页面当成文件保存下来（表现为下载到一个 `<目录名>.htm`）。前端选中目录时自动请求 `/files/<dir>?zip=1` 并追加 `.zip` 后缀作为保存文件名，选中普通文件则保持原链接与原名。
 

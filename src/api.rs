@@ -292,6 +292,21 @@ fn target_of(cfg: &Config, dir: &str, name: &str) -> Result<std::path::PathBuf, 
     Ok(path)
 }
 
+/// Nearest existing ancestor, so a folder upload that has yet to create its
+/// parents still measures the volume it is about to write to.
+fn existing_ancestor(path: &Path) -> &Path {
+    let mut probe = path;
+    loop {
+        if probe.exists() {
+            return probe;
+        }
+        match probe.parent() {
+            Some(p) if !p.as_os_str().is_empty() => probe = p,
+            _ => return probe,
+        }
+    }
+}
+
 pub fn mkdir<R: Read>(
     cfg: &Config,
     id: &Identity,
@@ -746,12 +761,21 @@ pub fn trash_empty<R: Read>(
 }
 
 /// Streams an upload chunk. `offset` positions the write inside `<name>.fernpart`.
-pub fn upload<R: Read>(
+///
+/// `space_of` reports the free space of the volume holding a directory. When it
+/// is known and cannot cover the rest of the file, the request is rejected up
+/// front: writing until the volume fills up costs a slow round trip per chunk
+/// and leaves a partial file that keeps the disk full until it is discarded.
+pub fn upload<R: Read, F>(
     cfg: &Config,
     id: &Identity,
     req: &Request,
     reader: &mut R,
-) -> Response {
+    space_of: F,
+) -> Response
+where
+    F: Fn(&Path) -> Option<crate::disk::Space>,
+{
     if !id.can(PERM_UPLOAD) {
         discard_body(reader, req);
         return Response::error(403, "forbidden", "uploading is not permitted");
@@ -803,6 +827,31 @@ pub fn upload<R: Read>(
         .dump();
         discard_body(reader, req);
         return Response::json(409, body);
+    }
+
+    // Refuse the transfer before reading the body when the volume cannot hold
+    // the rest of the file. Streaming until ENOSPC costs one slow round trip per
+    // chunk and leaves a `.fernpart` that keeps the disk full until the client
+    // gives up on it.
+    let volume = final_path.parent().unwrap_or(final_path.as_path());
+    if let Some(space) = space_of(existing_ancestor(volume)) {
+        // `available` already excludes the bytes we hold, and a restart is about
+        // to truncate them, so they count as free again.
+        let (needed, reclaimed) = if restart {
+            (if total != 0 { total } else { len }, have)
+        } else if total != 0 {
+            (total.saturating_sub(have), 0)
+        } else {
+            (len, 0)
+        };
+        if needed > space.available.saturating_add(reclaimed) {
+            discard_body(reader, req);
+            return Response::error(
+                507,
+                "no_space",
+                "not enough space on the volume for this file",
+            );
+        }
     }
 
     let mut writer = match fsapi::UploadWriter::open(&final_path, offset, restart) {
@@ -1049,4 +1098,110 @@ pub fn write_text<R: Read>(
         ])
         .dump(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::disk::Space;
+    use std::io::Cursor;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fern-api-{}-{}-{}",
+            tag,
+            std::process::id(),
+            crate::util::now_secs()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn upload_request(total: u64, len: u64) -> Request {
+        Request {
+            method: "PUT".into(),
+            target: "/_api/upload".into(),
+            path: "/_api/upload".into(),
+            query: vec![
+                ("path".into(), "/".into()),
+                ("name".into(), "big.bin".into()),
+                ("offset".into(), "0".into()),
+                ("total".into(), total.to_string()),
+            ],
+            version: "HTTP/1.1".into(),
+            headers: vec![("content-length".into(), len.to_string())],
+        }
+    }
+
+    fn space(available: u64) -> impl Fn(&Path) -> Option<Space> {
+        move |_| {
+            Some(Space {
+                total: available,
+                free: available,
+                available,
+            })
+        }
+    }
+
+    #[test]
+    fn upload_is_refused_up_front_when_the_volume_is_too_small() {
+        let root = temp_root("no-space");
+        let mut cfg = Config::default();
+        cfg.root = root.clone();
+        let id = Identity::guest(PERM_UPLOAD);
+        let req = upload_request(1_000, 1_000);
+        let payload = vec![7u8; 1_000];
+        let mut body = Cursor::new(payload.clone());
+
+        let resp = upload(&cfg, &id, &req, &mut body, space(200));
+        assert_eq!(resp.status, 507);
+        // The body is still drained, otherwise closing the socket resets it and
+        // the browser shows a network error instead of the JSON.
+        assert_eq!(body.position(), 1_000);
+        assert!(!root.join("big.bin.fernpart").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn upload_proceeds_when_the_volume_has_room() {
+        let root = temp_root("has-space");
+        let mut cfg = Config::default();
+        cfg.root = root.clone();
+        let id = Identity::guest(PERM_UPLOAD);
+        let req = upload_request(1_000, 1_000);
+        let mut body = Cursor::new(vec![7u8; 1_000]);
+
+        let resp = upload(&cfg, &id, &req, &mut body, space(8_192));
+        assert_eq!(resp.status, 200);
+        assert_eq!(
+            std::fs::read(root.join("big.bin")).unwrap(),
+            vec![7u8; 1_000]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn upload_counts_only_the_bytes_it_still_needs() {
+        let root = temp_root("resume-space");
+        let mut cfg = Config::default();
+        cfg.root = root.clone();
+        let id = Identity::guest(PERM_UPLOAD);
+        // A 4 KiB file whose first 3 KiB already sit in `.fernpart` needs 1 KiB.
+        let target = fsapi::resolve(&cfg.root, "/big.bin").unwrap();
+        let mut writer = fsapi::UploadWriter::open(&target, 0, false).unwrap();
+        writer.write_chunk(&vec![1u8; 3_072]).unwrap();
+        drop(writer);
+
+        let mut req = upload_request(4_096, 1_024);
+        req.query[2].1 = "3072".into();
+        let mut body = Cursor::new(vec![2u8; 1_024]);
+        let resp = upload(&cfg, &id, &req, &mut body, space(1_024));
+        assert_eq!(resp.status, 200);
+        assert_eq!(
+            std::fs::metadata(root.join("big.bin")).unwrap().len(),
+            4_096
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
