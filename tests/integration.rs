@@ -275,6 +275,29 @@ fn serves_ui_and_assets() {
 }
 
 #[test]
+fn disk_usage_reports_volume_capacity() {
+    let h = Harness::start();
+    // Guests may read files but not list directories, so the capacity readout
+    // (which is part of the listing footer) stays private too.
+    assert_eq!(h.request("GET", "/_api/disk", b"").status, 403);
+
+    let auth = h.login();
+    let resp = h.request_with("GET", "/_api/disk", b"", &[("Cookie", &auth)]);
+    assert_eq!(resp.status, 200);
+    let text = resp.text();
+    let total = json_num(&text, "total");
+    if contains(&text, "\"error\":\"unavailable\"") {
+        return;
+    }
+    let used = json_num(&text, "used");
+    let free = json_num(&text, "free");
+    assert!(total > 0.0, "capacity must be positive: {}", text);
+    assert!(used >= 0.0 && free >= 0.0);
+    assert_eq!(used + free, total);
+    assert!(json_num(&text, "available") <= free);
+}
+
+#[test]
 fn guest_permissions_are_enforced() {
     let h = Harness::start();
     let resp = h.request("GET", "/_api/session", b"");

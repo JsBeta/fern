@@ -4,6 +4,7 @@ use crate::api;
 use crate::assets;
 use crate::auth::{self, Identity, Sessions};
 use crate::config::{Config, PERM_READ};
+use crate::disk;
 use crate::fsapi;
 use crate::http::{self, Body, Request, Response};
 use crate::mime;
@@ -14,8 +15,8 @@ use std::io::{self, BufReader};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; \
 style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'; \
@@ -30,7 +31,14 @@ pub struct Server {
     pub sessions: Sessions,
     active: AtomicUsize,
     pub shutdown: Arc<AtomicUsize>,
+    /// Last volume capacity reading and when it was taken. The footer asks for
+    /// it on every listing, so a short TTL keeps the syscall (and the `df` fork
+    /// on Unix) out of the request path.
+    disk: Mutex<(Instant, Option<disk::Space>)>,
 }
+
+/// How long a volume capacity reading stays usable.
+const DISK_TTL: Duration = Duration::from_secs(5);
 
 pub fn bind_all(cfg: &Config) -> io::Result<Vec<TcpListener>> {
     bind_all_retry(cfg, 0, Duration::from_millis(0))
@@ -169,7 +177,19 @@ impl Server {
             sessions: Sessions::new(),
             active: AtomicUsize::new(0),
             shutdown: Arc::new(AtomicUsize::new(0)),
+            disk: Mutex::new((Instant::now() - DISK_TTL, None)),
         }
+    }
+
+    /// Volume capacity for `Fern.Root`, refreshed at most every `DISK_TTL`.
+    fn disk_space(&self) -> Option<disk::Space> {
+        let mut slot = self.disk.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.0.elapsed() < DISK_TTL {
+            return slot.1;
+        }
+        slot.1 = disk::space_of(&self.cfg.root);
+        slot.0 = Instant::now();
+        slot.1
     }
 
     pub fn run(self: Arc<Self>) -> io::Result<()> {
@@ -340,6 +360,7 @@ impl Server {
             }
             ("/logout", "POST") => api::logout(&self.sessions, id),
             ("/list", "GET") | ("/list", "HEAD") => api::list(&self.cfg, id, req),
+            ("/disk", "GET") | ("/disk", "HEAD") => api::disk(&self.cfg, id, self.disk_space()),
             ("/mkdir", "POST") => api::mkdir(&self.cfg, id, req, reader),
             ("/newfile", "POST") => api::new_file(&self.cfg, id, req, reader),
             ("/rename", "POST") => api::rename(&self.cfg, id, req, reader),

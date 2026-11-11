@@ -9,6 +9,7 @@ mod assets;
 mod auth;
 mod cli;
 mod config;
+mod disk;
 mod fsapi;
 mod http;
 mod inflate;

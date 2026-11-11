@@ -469,18 +469,41 @@ body.trash-mode .uploads {
     padding: 28px 0;
 }
 
+/* Keep the footer visible while retaining its space below the last row. */
 .statusbar {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
     display: flex;
+    align-items: center;
     gap: 8px;
     padding: 8px 18px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
     color: var(--muted);
     font-size: 12.5px;
     border-top: 1px solid var(--line);
     background: var(--panel);
 }
 
+/* The label pair truncates rather than stretching the bar. */
+.statusbar > span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .statusbar a {
    color:  var(--accent);
+}
+
+.statusbar .disk {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: nowrap;
+}
+
+.statusbar .disk.low {
+    color: var(--danger);
 }
 
 .dropzone {
@@ -501,7 +524,8 @@ body.trash-mode .uploads {
 .uploads {
     position: fixed;
     right: 16px;
-    bottom: 16px;
+    /* Clears the pinned status bar. */
+    bottom: calc(52px + env(safe-area-inset-bottom));
     width: min(340px, calc(100vw - 32px));
     display: flex;
     flex-direction: column;
@@ -577,7 +601,8 @@ body.trash-mode .uploads {
 .toast {
     position: fixed;
     left: 50%;
-    bottom: 28px;
+    /* Above the pinned status bar instead of on top of it. */
+    bottom: calc(64px + env(safe-area-inset-bottom));
     transform: translateX(-50%);
     background: var(--text);
     color: var(--bg);
@@ -713,5 +738,9 @@ body.trash-mode .uploads {
     }
     .toolbar button {
         padding: 6px 8px;
+    }
+    /* The footer would wrap onto two lines once the disk readout is shown. */
+    .statusbar .disk {
+        display: none;
     }
 }

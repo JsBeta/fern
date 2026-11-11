@@ -154,6 +154,7 @@ async function load() {
     renderList();
     el('status').textContent = data.writable ? '可写' : '只读';
     el('count').textContent = state.entries.length + ' 项';
+    loadDisk();
   } catch (e) {
     if (e.status === 401 || e.status === 403) {
       toast('无权访问该目录');
@@ -185,6 +186,7 @@ async function loadTrash() {
       ? '回收站保留 ' + data.maxDays + ' 天'
       : '回收站已停用，删除即永久移除';
     el('count').textContent = (data.total || 0) + ' 项 · ' + fmtSize(data.bytes || 0);
+    loadDisk();
   } catch (e) {
     failed = true;
     toast('无法加载回收站：' + e.message);
@@ -197,6 +199,33 @@ async function loadTrash() {
     return load();
   }
   refreshToolbar();
+}
+
+// 页脚显示的是托管目录所在卷的容量，不是目录内容总和：递归统计大目录会让
+// 每次刷新都变慢，而且回答不了“还剩多少”。旧版服务端没有 /disk，静默隐藏。
+let diskPending = false;
+
+async function loadDisk() {
+  const node = el('disk');
+  if (!node || diskPending) return;
+  diskPending = true;
+  try {
+    const data = await api('/disk');
+    if (!data || !data.total) {
+      node.hidden = true;
+      return;
+    }
+    const free = data.available || 0;
+    node.textContent = '已用 ' + fmtSize(data.used || 0) + ' / ' + fmtSize(data.total) +
+      ' · 剩余 ' + fmtSize(free);
+    node.title = (data.path || '') + '\n共 ' + fmtSize(data.total) + '，剩余 ' + fmtSize(free);
+    node.classList.toggle('low', free * 10 < data.total);
+    node.hidden = false;
+  } catch (e) {
+    node.hidden = true;
+  } finally {
+    diskPending = false;
+  }
 }
 
 function renderCrumbs() {

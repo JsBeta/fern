@@ -51,6 +51,27 @@ pub fn session_info(cfg: &Config, id: &Identity) -> Response {
     Response::json(200, body)
 }
 
+pub fn disk(cfg: &Config, id: &Identity, space: Option<crate::disk::Space>) -> Response {
+    if !id.can(PERM_LIST) {
+        return Response::error(403, "forbidden", "listing permission required");
+    }
+    let Some(space) = space else {
+        return Response::json(
+            200,
+            json::obj(vec![("error", Json::Str("unavailable".into()))]).dump(),
+        );
+    };
+    let body = json::obj(vec![
+        ("path", Json::Str(cfg.root.display().to_string())),
+        ("total", Json::Num(space.total as i64)),
+        ("used", Json::Num(space.used() as i64)),
+        ("free", Json::Num(space.free as i64)),
+        ("available", Json::Num(space.available as i64)),
+    ])
+    .dump();
+    Response::json(200, body)
+}
+
 pub fn login(
     cfg: &Config,
     sessions: &Sessions,
