@@ -374,14 +374,31 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
           if [ "$DRAFT" = "true" ]; then flags+=(--draft); fi
 
+          # Release bodies are curated by hand and live in the repo, so every
+          # release carries the same Chinese notes as the tag it ships from.
+          # Delete the file to fall back to GitHub's generated changelog.
+          notes=(--generate-notes)
+          notes_file="docs/release-notes/$TAG.md"
+          if [ -f "$notes_file" ]; then
+            echo "Using $notes_file as the release body."
+            notes=(--notes-file "$notes_file")
+          else
+            echo "No $notes_file, falling back to --generate-notes."
+          fi
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, refreshing its assets."
+            echo "Release $TAG already exists, refreshing its body and assets."
+            # `gh release edit` has no --generate-notes, so only a curated file
+            # can update an existing body; otherwise leave it untouched.
+            if [ -f "$notes_file" ]; then
+              gh release edit "$TAG" --notes-file "$notes_file"
+            fi
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* \
               --target "$GITHUB_SHA" \
               --title "fern $VERSION" \
-              --generate-notes \
+              "${notes[@]}" \
               ${flags[@]+"${flags[@]}"}
           fi
           gh release view "$TAG"

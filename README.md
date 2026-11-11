@@ -138,6 +138,15 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
+Release 正文取自 `docs/release-notes/<tag>.md`（例如 `v0.1.3` 读 `docs/release-notes/v0.1.3.md`），所以发版时把说明和版本号一起提交：
+
+| 情况 | 行为 |
+|---|---|
+| 存在 `docs/release-notes/<tag>.md` | `gh release create --notes-file`；Release 已存在（重跑、`workflow_dispatch`）则用 `gh release edit --notes-file` 覆盖正文后再上传产物 |
+| 没有该文件 | 退回 `--generate-notes`，正文只有一条 Full Changelog 链接（本项目直接推 `main`，没有 PR 可供汇总） |
+
+写法见 [`docs/release-notes/README.md`](docs/release-notes/README.md)。正文必须与 tag 一同入库，否则发布后再补就要手工改 Release。
+
 手动触发时可指定 `tag`（缺省 `v<Cargo.toml 版本>`，标签不存在会在当前提交上创建）和 `draft`（生成草稿 Release，便于先检查产物再发布）。
 
 ---
