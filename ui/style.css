@@ -485,12 +485,25 @@ body.trash-mode .uploads {
     background: var(--panel);
 }
 
-/* The label pair truncates rather than stretching the bar. */
-.statusbar > span:first-child {
+/* The label pair and the current path truncate rather than stretching the bar. */
+.statusbar > .stat,
+.statusbar > .cwd {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.statusbar > .stat {
+    flex: 0 1 auto;
+}
+
+.statusbar > .cwd {
+    flex: 0 1 auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text);
+    /* Keep the path from pushing the capacity readout off the bar. */
+    max-width: 45%;
 }
 
 .statusbar a {
@@ -498,7 +511,15 @@ body.trash-mode .uploads {
 }
 
 .statusbar .disk {
+    flex: 0 0 auto;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: nowrap;
+}
+
+/* The credit never shrinks: letting it compress would wrap it onto a second
+   line and make the whole bar taller. */
+.statusbar > .brand {
+    flex: 0 0 auto;
     white-space: nowrap;
 }
 
@@ -739,8 +760,25 @@ body.trash-mode .uploads {
     .toolbar button {
         padding: 6px 8px;
     }
-    /* The footer would wrap onto two lines once the disk readout is shown. */
-    .statusbar .disk {
+    /* Capacity and path matter more than the credit, so the credit goes first. */
+    .statusbar > .brand {
+        display: none;
+    }
+    /* The path yields all of its room to the readout instead of truncating it. */
+    .statusbar > .cwd {
+        flex: 1 1 auto;
+        max-width: none;
+    }
+}
+
+/* Below this the three readings cannot share one line: let the bar grow a
+   second row instead of squeezing the labels down to unreadable slivers. */
+@media (max-width: 480px) {
+    .statusbar {
+        flex-wrap: wrap;
+        row-gap: 2px;
+    }
+    .statusbar > .spacer {
         display: none;
     }
 }

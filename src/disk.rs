@@ -1,8 +1,12 @@
-//! Capacity of the volume that holds `Fern.Root`.
+//! Capacity of the volume that holds a given directory.
 //!
 //! Only volume level numbers are reported: walking the share just to add up
 //! file sizes would stall the request on large trees, and it also would not
 //! answer "how much room is left".
+//!
+//! The directory matters because the share root is often not where the data
+//! lives: a server sharing `/mnt` with separate disks mounted at `/mnt/hdd1`
+//! and `/mnt/hdd2` would otherwise report the system disk for every listing.
 
 use std::path::Path;
 

@@ -295,6 +295,41 @@ fn disk_usage_reports_volume_capacity() {
     assert!(used >= 0.0 && free >= 0.0);
     assert_eq!(used + free, total);
     assert!(json_num(&text, "available") <= free);
+
+    // A nested directory lives on the same volume as the root here, so the
+    // total must match while the reported path follows the request. `used` is
+    // not compared: the second reading is taken after the cache entry for the
+    // root was written, so live disk activity can shift it.
+    let resp = h.request_with("GET", "/_api/disk?path=/sub", b"", &[("Cookie", &auth)]);
+    assert_eq!(resp.status, 200);
+    let nested = resp.text();
+    if !contains(&nested, "\"error\":\"unavailable\"") {
+        assert!(contains(&nested, "sub"), "path must follow: {}", nested);
+        assert_eq!(json_num(&nested, "total"), total);
+        assert_eq!(
+            json_num(&nested, "used") + json_num(&nested, "free"),
+            json_num(&nested, "total")
+        );
+    }
+
+    // The root is reported for an unknown directory so the footer keeps a
+    // reading instead of blanking out.
+    let resp = h.request_with(
+        "GET",
+        "/_api/disk?path=/missing",
+        b"",
+        &[("Cookie", &auth)],
+    );
+    assert_eq!(resp.status, 200);
+    assert!(!contains(&resp.text(), "missing"));
+
+    // Traversal is a bad path, the recycle bin is forbidden.
+    for path in ["/_api/disk?path=/../../etc", "/_api/disk?path=/sub/../.."] {
+        let resp = h.request_with("GET", path, b"", &[("Cookie", &auth)]);
+        assert_eq!(resp.status, 400, "{} should be rejected", path);
+    }
+    let resp = h.request_with("GET", "/_api/disk?path=/.Trash", b"", &[("Cookie", &auth)]);
+    assert_eq!(resp.status, 403);
 }
 
 #[test]

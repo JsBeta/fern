@@ -42,7 +42,7 @@
 | `src/http.rs` | 请求解析、响应写出、`Expect: 100-continue` |
 | `src/api.rs` | `/_api/*` JSON 接口：会话、登录、列表、新建、重命名、复制、删除、上传、文本读写、回收站 |
 | `src/fsapi.rs` | 路径解析与越界防护、目录枚举、断点续传写入器 |
-| `src/disk.rs` | 托管目录所在卷的容量读数：Windows 走 `GetDiskFreeSpaceExW`，Unix 走 `df -Pk`（`statvfs` 的块计数器在 Linux/FreeBSD 是 `unsigned long`、在 Darwin 是 32 位，无法共用一份结构体定义） |
+| `src/disk.rs` | 指定目录所在卷的容量读数：Windows 走 `GetDiskFreeSpaceExW`，Unix 走 `df -Pk`（`statvfs` 的块计数器在 Linux/FreeBSD 是 `unsigned long`、在 Darwin 是 32 位，无法共用一份结构体定义）。按目录而不是按托管根查询，`/mnt` 下挂载 `/mnt/hdd1`、`/mnt/hdd2` 时各卷才会分别显示 |
 | `src/trash.rs` | 回收站：条目布局与 `meta.json`、移入/列表/恢复/清除/策略淘汰、旧扁平条目兼容 |
 | `src/zip.rs` | 目录流式 ZIP 打包（存储式，`Content-Length` 预先可知） |
 | `src/auth.rs` | 用户校验、会话 token、失败次数限流 |
@@ -226,7 +226,7 @@ MIME 覆盖文件每行 `<ext> <type>` 或 `<type> <ext> <ext>...`；工作目�
 | POST | `/_api/login` | `{"user","pass"}` → `Set-Cookie` |
 | POST | `/_api/logout` | 清除会话 |
 | GET | `/_api/list?path=/` | 目录列表 |
-| GET | `/_api/disk` | 托管目录所在**卷**的容量：`{"path","total","used","free","available"}`（字节）。只统计卷，不递归累加目录内容，结果在服务端缓存 5 秒；读不到时仍返回 200 但只有 `{"error":"unavailable"}`，前端据此隐藏页脚读数（需 `l`） |
+| GET | `/_api/disk?path=/dir` | `path` 目录所在**卷**的容量：`{"path","total","used","free","available"}`（`path` 为绝对路径，其余为字节数）。省略 `path` 时按根目录；只统计卷，不递归累加目录内容，服务端按目录缓存 5 秒（上限 32 个目录）；读不到时仍返回 200 但只有 `{"error":"unavailable"}`，前端据此隐藏页脚读数（需 `l`） |
 | POST | `/_api/mkdir` | `{"path","name"}` |
 | POST | `/_api/newfile` | `{"path","name"}` → `{"ok":true,"path":"/dir/name","name"}`；在 `path` 目录下新建**空文件**，拒绝含 `/`、`\`、`..` 或内部后缀（`.fernpart`/`.fernedit`）的名字（`400 bad_name`），已存在则 `409 exists`，从不覆盖（需 `m`） |
 | POST | `/_api/rename` | `{"from","to"}` |

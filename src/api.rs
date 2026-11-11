@@ -51,18 +51,43 @@ pub fn session_info(cfg: &Config, id: &Identity) -> Response {
     Response::json(200, body)
 }
 
-pub fn disk(cfg: &Config, id: &Identity, space: Option<crate::disk::Space>) -> Response {
+/// Volume capacity for the directory the caller is looking at.
+///
+/// The footer follows the current directory instead of always reporting the
+/// share root, because disks are commonly mounted below the root: sharing
+/// `/mnt` with `/mnt/hdd1` and `/mnt/hdd2` mounted on top would otherwise show
+/// the system disk for every listing.
+pub fn disk<F>(cfg: &Config, id: &Identity, req: &Request, space_of: F) -> Response
+where
+    F: Fn(&Path) -> Option<crate::disk::Space>,
+{
     if !id.can(PERM_LIST) {
         return Response::error(403, "forbidden", "listing permission required");
     }
-    let Some(space) = space else {
+    let mut dir = match fsapi::resolve(&cfg.root, req.q("path").unwrap_or("/")) {
+        Ok(p) => p,
+        Err(e) => return err_response(&e),
+    };
+    if let Err(e) = fsapi::ensure_inside(&cfg.root, &dir) {
+        return err_response(&e);
+    }
+    if dir.starts_with(trash::dir(&cfg.root)) {
+        return Response::error(403, "forbidden", "the recycle bin has no readable capacity");
+    }
+    // A directory that vanished between the listing and this request should not
+    // blank the footer, so fall back to the share root, which always exists.
+    let usable = std::fs::metadata(&dir).map(|m| m.is_dir()).unwrap_or(false);
+    if !usable {
+        dir = cfg.root.clone();
+    }
+    let Some(space) = space_of(&dir) else {
         return Response::json(
             200,
             json::obj(vec![("error", Json::Str("unavailable".into()))]).dump(),
         );
     };
     let body = json::obj(vec![
-        ("path", Json::Str(cfg.root.display().to_string())),
+        ("path", Json::Str(dir.display().to_string())),
         ("total", Json::Num(space.total as i64)),
         ("used", Json::Num(space.used() as i64)),
         ("free", Json::Num(space.free as i64)),

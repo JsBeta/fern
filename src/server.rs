@@ -12,8 +12,9 @@ use crate::range::{self, RangeSpec};
 use crate::util::{self, percent_encode};
 use crate::zip::{self, ZipStream};
 use std::io::{self, BufReader};
+use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,14 +32,20 @@ pub struct Server {
     pub sessions: Sessions,
     active: AtomicUsize,
     pub shutdown: Arc<AtomicUsize>,
-    /// Last volume capacity reading and when it was taken. The footer asks for
-    /// it on every listing, so a short TTL keeps the syscall (and the `df` fork
-    /// on Unix) out of the request path.
-    disk: Mutex<(Instant, Option<disk::Space>)>,
+    /// Recent capacity readings keyed by the directory that was probed, with
+    /// the time they were taken. The footer asks for it on every listing, so a
+    /// short TTL keeps the syscall (and the `df` fork on Unix) out of the
+    /// request path. Keying by directory matters because separate disks can be
+    /// mounted below the share root.
+    disk: Mutex<HashMap<PathBuf, (Instant, Option<disk::Space>)>>,
 }
 
 /// How long a volume capacity reading stays usable.
 const DISK_TTL: Duration = Duration::from_secs(5);
+
+/// Upper bound on cached directories; browsing deep trees must not grow the
+/// map without limit.
+const DISK_CACHE_MAX: usize = 32;
 
 pub fn bind_all(cfg: &Config) -> io::Result<Vec<TcpListener>> {
     bind_all_retry(cfg, 0, Duration::from_millis(0))
@@ -177,19 +184,29 @@ impl Server {
             sessions: Sessions::new(),
             active: AtomicUsize::new(0),
             shutdown: Arc::new(AtomicUsize::new(0)),
-            disk: Mutex::new((Instant::now() - DISK_TTL, None)),
+            disk: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Volume capacity for `Fern.Root`, refreshed at most every `DISK_TTL`.
-    fn disk_space(&self) -> Option<disk::Space> {
-        let mut slot = self.disk.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.0.elapsed() < DISK_TTL {
-            return slot.1;
+    /// Volume capacity for the volume holding `path`, refreshed at most every
+    /// `DISK_TTL`.
+    fn disk_space(&self, path: &Path) -> Option<disk::Space> {
+        let mut cache = self.disk.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((taken, space)) = cache.get(path) {
+            if taken.elapsed() < DISK_TTL {
+                return *space;
+            }
         }
-        slot.1 = disk::space_of(&self.cfg.root);
-        slot.0 = Instant::now();
-        slot.1
+        let space = disk::space_of(path);
+        if cache.len() >= DISK_CACHE_MAX {
+            let now = Instant::now();
+            cache.retain(|_, (taken, _)| now.duration_since(*taken) < DISK_TTL);
+            if cache.len() >= DISK_CACHE_MAX {
+                cache.clear();
+            }
+        }
+        cache.insert(path.to_path_buf(), (Instant::now(), space));
+        space
     }
 
     pub fn run(self: Arc<Self>) -> io::Result<()> {
@@ -360,7 +377,9 @@ impl Server {
             }
             ("/logout", "POST") => api::logout(&self.sessions, id),
             ("/list", "GET") | ("/list", "HEAD") => api::list(&self.cfg, id, req),
-            ("/disk", "GET") | ("/disk", "HEAD") => api::disk(&self.cfg, id, self.disk_space()),
+            ("/disk", "GET") | ("/disk", "HEAD") => {
+                api::disk(&self.cfg, id, req, |p| self.disk_space(p))
+            }
             ("/mkdir", "POST") => api::mkdir(&self.cfg, id, req, reader),
             ("/newfile", "POST") => api::new_file(&self.cfg, id, req, reader),
             ("/rename", "POST") => api::rename(&self.cfg, id, req, reader),

@@ -201,16 +201,20 @@ async function loadTrash() {
   refreshToolbar();
 }
 
-// 页脚显示的是托管目录所在卷的容量，不是目录内容总和：递归统计大目录会让
+// 页脚显示的是当前目录所在卷的容量，不是目录内容总和：递归统计大目录会让
 // 每次刷新都变慢，而且回答不了“还剩多少”。旧版服务端没有 /disk，静默隐藏。
 let diskPending = false;
 
 async function loadDisk() {
+  // 路径先渲染：容量接口失败或被旧版服务端忽略时，路径仍然可用。
+  renderCwd();
   const node = el('disk');
   if (!node || diskPending) return;
   diskPending = true;
+  // 回收站没有自己的目录，容量按托管根目录所在的卷读。
+  const path = isTrashPath(state.path) ? '/' : state.path;
   try {
-    const data = await api('/disk');
+    const data = await api('/disk?path=' + encodeURIComponent(path));
     if (!data || !data.total) {
       node.hidden = true;
       return;
@@ -218,7 +222,7 @@ async function loadDisk() {
     const free = data.available || 0;
     node.textContent = '已用 ' + fmtSize(data.used || 0) + ' / ' + fmtSize(data.total) +
       ' · 剩余 ' + fmtSize(free);
-    node.title = (data.path || '') + '\n共 ' + fmtSize(data.total) + '，剩余 ' + fmtSize(free);
+    node.title = '卷 ' + (data.path || '') + '\n共 ' + fmtSize(data.total) + '，剩余 ' + fmtSize(free);
     node.classList.toggle('low', free * 10 < data.total);
     node.hidden = false;
   } catch (e) {
@@ -226,6 +230,16 @@ async function loadDisk() {
   } finally {
     diskPending = false;
   }
+}
+
+// 目录路径与容量读数成对出现：多个磁盘挂在托管目录下时，读数是当前目录所在的卷。
+function renderCwd() {
+  const node = el('cwd');
+  if (!node) return;
+  const path = isTrashPath(state.path) ? '' : state.path;
+  node.textContent = path;
+  node.title = path;
+  node.hidden = !path;
 }
 
 function renderCrumbs() {
