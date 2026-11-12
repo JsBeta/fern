@@ -1,89 +1,116 @@
 //! Console, daily file and syslog logging.
 
-use crate::config::Config;
+use crate::config::{Config, LogLevel};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 struct Sink {
     file: Option<(PathBuf, File)>,
     log_dir: Option<PathBuf>,
     console: bool,
     syslog: bool,
+    level: LogLevel,
 }
 
-static SINK: OnceLock<Mutex<Sink>> = OnceLock::new();
+static SINK: Mutex<Option<Sink>> = Mutex::new(None);
 
+/// Installs the sink. Safe to call again after the configuration changed: the
+/// open log file is kept when the directory is unchanged.
 pub fn init(cfg: &Config) {
     let console = !cfg.hide && cfg.log_dir.is_none();
-    let sink = Sink {
-        file: None,
-        log_dir: cfg.log_dir.clone(),
-        console,
-        syslog: cfg.syslog,
-    };
-    let _ = SINK.set(Mutex::new(sink));
-}
-
-pub fn info(msg: &str) {
-    emit("INFO", msg);
-}
-
-pub fn error(msg: &str) {
-    emit("ERROR", msg);
-}
-
-pub fn warn(msg: &str) {
-    emit("WARN", msg);
-}
-
-fn emit(level: &str, msg: &str) {
-    let text = format!("[{}] {} {}\n", level, crate::util::http_date(crate::util::now_secs()), msg);
-    let sink = match SINK.get() {
-        Some(s) => s,
-        None => {
-            eprint!("{}", text);
-            return;
-        }
-    };
-    let mut guard = match sink.lock() {
+    let mut guard = match SINK.lock() {
         Ok(g) => g,
         Err(_) => return,
     };
-    if guard.console {
+    let file = match guard.take() {
+        Some(old) if old.log_dir == cfg.log_dir => old.file,
+        _ => None,
+    };
+    *guard = Some(Sink {
+        file,
+        log_dir: cfg.log_dir.clone(),
+        console,
+        syslog: cfg.syslog,
+        level: cfg.log_level,
+    });
+}
+
+pub fn debug(msg: &str) {
+    emit(LogLevel::Debug, msg);
+}
+
+pub fn info(msg: &str) {
+    emit(LogLevel::Info, msg);
+}
+
+pub fn error(msg: &str) {
+    emit(LogLevel::Error, msg);
+}
+
+pub fn warn(msg: &str) {
+    emit(LogLevel::Warn, msg);
+}
+
+fn emit(level: LogLevel, msg: &str) {
+    let text = format!(
+        "[{}] {} {}\n",
+        level.tag(),
+        crate::util::http_date(crate::util::now_secs()),
+        msg
+    );
+    let mut guard = match SINK.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if guard.is_none() {
+        drop(guard);
+        eprint!("{}", text);
+        return;
+    }
+    let sink = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
+    if level.rank() > sink.level.rank() {
+        return;
+    }
+    if sink.console {
         eprint!("{}", text);
     }
-    if guard.syslog {
+    if sink.syslog {
         platform_syslog(&text);
     }
-    if let Some(dir) = guard.log_dir.clone() {
-        let name = log_file_name();
-        let stale = match &guard.file {
-            Some((path, _)) => path.file_name().and_then(|s| s.to_str()) != Some(name.as_str()),
-            None => true,
-        };
-        if stale {
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                if guard.console {
-                    eprintln!("[ERROR] cannot create log dir {}: {}", dir.display(), e);
-                }
-            } else {
-                let path = dir.join(&name);
-                match OpenOptions::new().create(true).append(true).open(&path) {
-                    Ok(f) => guard.file = Some((path, f)),
-                    Err(e) => {
-                        if guard.console {
-                            eprintln!("[ERROR] cannot open {}: {}", dir.display(), e);
-                        }
+    let dir = match sink.log_dir.clone() {
+        Some(d) => d,
+        None => return,
+    };
+    let name = log_file_name();
+    let stale = match &sink.file {
+        Some((path, _)) => path.file_name().and_then(|s| s.to_str()) != Some(name.as_str()),
+        None => true,
+    };
+    if stale {
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            if sink.console {
+                eprintln!("[ERROR] cannot create log dir {}: {}", dir.display(), e);
+            }
+        } else {
+            let path = dir.join(&name);
+            match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(f) => sink.file = Some((path, f)),
+                Err(e) => {
+                    if sink.console {
+                        eprintln!("[ERROR] cannot open {}: {}", dir.display(), e);
                     }
                 }
             }
         }
-        if let Some((_, f)) = guard.file.as_mut() {
-            let _ = f.write_all(text.as_bytes());
-            let _ = f.flush();
-        }
+    }
+    if let Some((_, f)) = sink.file.as_mut() {
+        let _ = f.write_all(text.as_bytes());
+        let _ = f.flush();
     }
 }
 

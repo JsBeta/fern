@@ -15,6 +15,8 @@
 
 use std::ffi::c_void;
 
+use super::config_win;
+
 type HWND = *mut c_void;
 type HINSTANCE = *mut c_void;
 type HICON = *mut c_void;
@@ -65,6 +67,7 @@ const MENU_OPEN: usize = 1;
 const MENU_RESTART: usize = 2;
 const MENU_ABOUT: usize = 3;
 const MENU_EXIT: usize = 4;
+const MENU_CONFIG: usize = 5;
 
 const MB_OK: u32 = 0x0000_0000;
 const MB_ICONINFORMATION: u32 = 0x0000_0040;
@@ -255,6 +258,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -
         WM_COMMAND => {
             match w & 0xffff {
                 MENU_OPEN => open_url(),
+                MENU_CONFIG => config_win::open(hwnd),
                 MENU_RESTART => restart_app(hwnd),
                 MENU_ABOUT => show_about(hwnd),
                 MENU_EXIT => exit_app(hwnd),
@@ -285,10 +289,12 @@ unsafe fn show_menu(hwnd: HWND) {
         return;
     }
     let open = wide("打开");
+    let config = wide("配置");
     let restart = wide("重启");
     let about = wide("关于");
     let exit = wide("退出");
     AppendMenuW(menu, MF_STRING, MENU_OPEN, open.as_ptr());
+    AppendMenuW(menu, MF_STRING, MENU_CONFIG, config.as_ptr());
     AppendMenuW(menu, MF_STRING, MENU_RESTART, restart.as_ptr());
     AppendMenuW(menu, MF_STRING, MENU_ABOUT, about.as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
@@ -311,6 +317,7 @@ unsafe fn show_menu(hwnd: HWND) {
     PostMessageW(hwnd, WM_NULL, 0, 0);
     match choice as usize {
         MENU_OPEN => open_url(),
+        MENU_CONFIG => config_win::open(hwnd),
         MENU_RESTART => restart_app(hwnd),
         MENU_ABOUT => show_about(hwnd),
         MENU_EXIT => exit_app(hwnd),
@@ -338,6 +345,16 @@ unsafe fn remove_icon(hwnd: HWND) {
     data.hwnd = hwnd;
     data.id = 1;
     Shell_NotifyIconW(NIM_DELETE, &mut data);
+}
+
+/// Removes the tray icon from a thread that does not own the hidden window.
+///
+/// Called by the configuration window right before it restarts the server.
+/// `Shell_NotifyIconW` is thread-safe, but `DestroyWindow` only works on the
+/// owning thread and the process is about to exit anyway, so only the icon is
+/// dropped here to keep the replacement process from showing a stale one.
+pub unsafe fn take_down(hwnd: HWND) {
+    remove_icon(hwnd);
 }
 
 /// Drops the icon and ends the process.
@@ -462,6 +479,15 @@ unsafe fn run() {
         return;
     }
     crate::log::info("tray icon added");
+    run_message_loop();
+}
+
+/// Pumps messages until something posts `WM_QUIT`.
+///
+/// Shared with the configuration window so the three message-loop entry points
+/// are declared once for the whole process (two declarations of the same symbol
+/// with different `MSGM` structs trip `clashing_extern_declarations`).
+pub(crate) unsafe fn run_message_loop() {
     let mut msg: Msg = std::mem::zeroed();
     while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
         TranslateMessage(&msg);

@@ -17,6 +17,80 @@ pub const DEFAULT_TITLE: &str = "fern";
 /// Upper bound for `Fern.Title` and `Fern.Notice`, keeps the top bar usable.
 pub const MAX_BRAND_CHARS: usize = 200;
 
+/// `Fern.LogLevel`: how much of the log reaches the console, the daily file
+/// and syslog. `Error` shows the least.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        LogLevel::Info
+    }
+}
+
+impl LogLevel {
+    pub fn parse(text: &str) -> Option<LogLevel> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "error" | "err" | "0" => Some(LogLevel::Error),
+            "warn" | "warning" | "1" => Some(LogLevel::Warn),
+            "info" | "2" => Some(LogLevel::Info),
+            "debug" | "3" => Some(LogLevel::Debug),
+            _ => None,
+        }
+    }
+
+    /// Canonical spelling used when the configuration is written back.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LogLevel::Error => "error",
+            LogLevel::Warn => "warn",
+            LogLevel::Info => "info",
+            LogLevel::Debug => "debug",
+        }
+    }
+
+    /// Upper-case tag written in front of every log line.
+    pub fn tag(self) -> &'static str {
+        match self {
+            LogLevel::Error => "ERROR",
+            LogLevel::Warn => "WARN",
+            LogLevel::Info => "INFO",
+            LogLevel::Debug => "DEBUG",
+        }
+    }
+
+    /// Severity rank: a message is written when its rank is not above the
+    /// configured one. Also the index of the level in the tray combo box.
+    pub fn rank(self) -> u8 {
+        match self {
+            LogLevel::Error => 0,
+            LogLevel::Warn => 1,
+            LogLevel::Info => 2,
+            LogLevel::Debug => 3,
+        }
+    }
+
+    /// Inverse of `rank`, used by the tray combo box and its stored index.
+    pub fn from_rank(rank: u8) -> LogLevel {
+        match rank {
+            0 => LogLevel::Error,
+            1 => LogLevel::Warn,
+            3 => LogLevel::Debug,
+            _ => LogLevel::Info,
+        }
+    }
+}
+
+/// One directive owned by the tray configuration window: the lower-case
+/// directive name together with the lines that replace every occurrence of it.
+/// An empty line list removes the directive, which restores its default.
+pub type DirectiveBlock = (&'static str, Vec<String>);
+
 #[derive(Debug, Clone)]
 pub struct User {
     pub name: String,
@@ -44,6 +118,8 @@ pub struct Config {
     pub title: String,
     /// `Fern.Notice`: optional banner text shown in the top bar.
     pub notice: String,
+    /// `Fern.LogLevel`: verbosity of the console, file and syslog output.
+    pub log_level: LogLevel,
     pub mime_files: Vec<PathBuf>,
     pub config_path: Option<PathBuf>,
     pub action: Option<Action>,
@@ -83,6 +159,7 @@ impl Default for Config {
             thread_stack: 128 * 1024,
             title: DEFAULT_TITLE.to_string(),
             notice: String::new(),
+            log_level: LogLevel::default(),
             mime_files: Vec::new(),
             config_path: None,
             action: None,
@@ -103,6 +180,84 @@ impl Config {
             max_bytes: self.trash_max_mb.saturating_mul(1024 * 1024),
             keep_same: self.trash_keep_same,
         }
+    }
+
+    /// Parses `text` as a standalone `fern.conf`.
+    ///
+    /// The tray configuration window uses it to check the merged file before
+    /// it replaces the one on disk, so a typo never costs the running
+    /// configuration.
+    pub fn from_text(text: &str, origin: &Path) -> Result<Config, String> {
+        let mut cfg = Config::default();
+        apply_conf_text(&mut cfg, text, origin)?;
+        cfg.root = absolute(&cfg.root);
+        Ok(cfg)
+    }
+
+    /// Directives owned by the tray configuration window, rendered from the
+    /// values currently in effect. `merge_directives` writes them back.
+    pub fn editable_blocks(&self) -> Vec<DirectiveBlock> {
+        let mut blocks: Vec<DirectiveBlock> = Vec::new();
+        blocks.push((
+            "fern.root",
+            vec![format!(
+                "Fern.Root {}",
+                quote_value(&self.root.to_string_lossy())
+            )],
+        ));
+        blocks.push((
+            "fern.listen",
+            self.listen
+                .iter()
+                .map(|l| format!("Fern.Listen {}", quote_value(l)))
+                .collect(),
+        ));
+        blocks.push((
+            "fern.loglevel",
+            vec![format!("Fern.LogLevel {}", self.log_level.as_str())],
+        ));
+        blocks.push((
+            "fern.maxconns",
+            vec![format!("Fern.MaxConns {}", self.max_conns)],
+        ));
+        blocks.push((
+            "fern.guest",
+            vec![format!("Fern.Guest {}", perms_text(self.guest))],
+        ));
+        blocks.push((
+            "fern.title",
+            vec![format!("Fern.Title {}", quote_value(&self.title))],
+        ));
+        blocks.push((
+            "fern.notice",
+            if self.notice.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!("Fern.Notice {}", quote_value(&self.notice))]
+            },
+        ));
+        blocks.push((
+            "fern.logdir",
+            match &self.log_dir {
+                Some(dir) => vec![format!(
+                    "Fern.LogDir {}",
+                    quote_value(&dir.to_string_lossy())
+                )],
+                None => Vec::new(),
+            },
+        ));
+        blocks.push((
+            "trash.enabled",
+            vec![format!(
+                "Trash.Enabled {}",
+                if self.trash_enabled { "1" } else { "0" }
+            )],
+        ));
+        blocks.push((
+            "trash.max.days",
+            vec![format!("Trash.Max.Days {}", self.trash_max_days)],
+        ));
+        blocks
     }
 }
 
@@ -285,6 +440,19 @@ pub fn parse_perms(text: &str) -> Option<u32> {
     Some(perms)
 }
 
+/// Letters for `perms`, or `"0"` when nothing is granted.
+///
+/// `perms_to_letters(0)` is the empty string, which reads badly in a
+/// configuration file and in the form; the explicit `0` is also what
+/// `parse_perms` accepts back.
+pub fn perms_text(perms: u32) -> String {
+    if perms == 0 {
+        "0".to_string()
+    } else {
+        perms_to_letters(perms)
+    }
+}
+
 pub fn perms_to_letters(perms: u32) -> String {
     let mut s = String::new();
     if perms & PERM_READ != 0 {
@@ -358,6 +526,13 @@ fn apply_conf_text(cfg: &mut Config, text: &str, origin: &Path) -> Result<(), St
             "fern.notice" => {
                 cfg.notice = brand_text(&parts, "Fern.Notice").map_err(|m| err(&m))?;
             }
+            "fern.loglevel" => {
+                let v = parts
+                    .first()
+                    .ok_or_else(|| err("Fern.LogLevel needs a level"))?;
+                cfg.log_level = LogLevel::parse(v)
+                    .ok_or_else(|| err("Fern.LogLevel must be error, warn, info or debug"))?;
+            }
             "fern.hide" => {
                 cfg.hide = parts.first().map(|v| truthy(v)).unwrap_or(true);
             }
@@ -422,7 +597,73 @@ fn brand_text(parts: &[String], name: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
-fn strip_comment(line: &str) -> &str {    let mut in_quotes = false;
+/// Rewrites `original` so that every directive named in `blocks` carries the
+/// new lines. Lines the window does not own — comments, blank lines and
+/// directives it never shows — are preserved verbatim, and a directive with an
+/// empty line list disappears so its default applies again.
+pub fn merge_directives(original: &str, blocks: &[DirectiveBlock]) -> String {
+    // Keep the file's own line endings; hand-edited Windows files are CRLF and
+    // rewriting them with bare LF would show up as a whole-file diff.
+    let eol = if original.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut pending: Vec<Option<&DirectiveBlock>> = blocks.iter().map(Some).collect();
+    let mut out: Vec<String> = Vec::new();
+    for raw in original.lines() {
+        let key = directive_key(raw);
+        let owned = key
+            .as_ref()
+            .and_then(|key| blocks.iter().position(|b| b.0 == key.as_str()));
+        match owned {
+            Some(i) => {
+                // A repeated directive is replaced by the block at its first
+                // occurrence; the leftover copies would otherwise survive and
+                // duplicate the new value.
+                if let Some(block) = pending[i].take() {
+                    out.extend(block.1.iter().cloned());
+                }
+            }
+            None => out.push(raw.to_string()),
+        }
+    }
+    for block in pending.into_iter().flatten() {
+        if block.1.is_empty() {
+            continue;
+        }
+        if out.last().map(|l| !l.is_empty()).unwrap_or(false) {
+            out.push(String::new());
+        }
+        out.extend(block.1.iter().cloned());
+    }
+    let mut text = out.join(eol);
+    if !text.is_empty() {
+        text.push_str(eol);
+    }
+    text
+}
+
+/// Lower-cased directive name of one line, ignoring comments and indentation.
+fn directive_key(raw: &str) -> Option<String> {
+    let line = strip_comment(raw).trim();
+    if line.is_empty() {
+        return None;
+    }
+    line.split_whitespace().next().map(|k| k.to_ascii_lowercase())
+}
+
+/// Quotes a value so the tokenizer keeps it in one piece.
+pub fn quote_value(value: &str) -> String {
+    let needs_quotes = value.is_empty()
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || c == '#' || c == '"');
+    if needs_quotes {
+        format!("\"{}\"", value.replace('"', "'"))
+    } else {
+        value.to_string()
+    }
+}
+
+fn strip_comment(line: &str) -> &str {
+    let mut in_quotes = false;
     for (i, c) in line.char_indices() {
         match c {
             '"' => in_quotes = !in_quotes,
@@ -506,6 +747,9 @@ mod tests {
         assert!(parse_perms("x").is_none());
         assert_eq!(perms_to_letters(3), "RL");
         assert_eq!(perms_to_letters(127), "RLUMSTD");
+        assert_eq!(perms_text(0), "0");
+        assert_eq!(perms_text(3), "RL");
+        assert_eq!(parse_perms(&perms_text(0)), Some(0));
     }
 
     #[test]
@@ -580,5 +824,121 @@ Fern.Hide 1
         assert!(apply_conf_text(&mut cfg, "Fern.Title", Path::new("x")).is_err());
         let too_long = format!("Fern.Title \"{}\"", "x".repeat(MAX_BRAND_CHARS + 1));
         assert!(apply_conf_text(&mut cfg, &too_long, Path::new("x")).is_err());
+    }
+
+    #[test]
+    fn log_level_round_trips_through_rank() {
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+        ] {
+            assert_eq!(LogLevel::from_rank(level.rank()), level);
+            assert_eq!(LogLevel::parse(level.as_str()), Some(level));
+        }
+        assert_eq!(LogLevel::parse("INFO"), Some(LogLevel::Info));
+        assert_eq!(LogLevel::parse("verbose"), None);
+        assert_eq!(LogLevel::default(), LogLevel::Info);
+        assert_eq!(LogLevel::Error.tag(), "ERROR");
+    }
+
+    #[test]
+    fn log_level_directive_filters_through_defaults() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.log_level, LogLevel::Info);
+        apply_conf_text(&mut cfg, "Fern.LogLevel debug", Path::new("x")).unwrap();
+        assert_eq!(cfg.log_level, LogLevel::Debug);
+        assert!(apply_conf_text(&mut cfg, "Fern.LogLevel loud", Path::new("x")).is_err());
+    }
+
+    #[test]
+    fn quote_value_keeps_one_token() {
+        assert_eq!(quote_value("4545"), "4545");
+        assert_eq!(quote_value("/data/my share"), "\"/data/my share\"");
+        assert_eq!(quote_value("#tag"), "\"#tag\"");
+        assert_eq!(quote_value(""), "\"\"");
+        assert_eq!(split_tokens(&quote_value("a b")).len(), 1);
+    }
+
+    #[test]
+    fn merge_replaces_owned_directives_and_keeps_everything_else() {
+        let original = "\
+# 顶部注释
+Fern.Root /old
+Fern.Listen 1
+Fern.Listen 2
+Fern.User RLUM alice secret
+Fern.Guest RL
+
+# 回收站
+Trash.Max.Size 256
+";
+        let blocks = vec![
+            ("fern.root", vec!["Fern.Root \"/new share\"".to_string()]),
+            ("fern.listen", vec!["Fern.Listen 4545".to_string()]),
+            ("trash.enabled", vec!["Trash.Enabled 1".to_string()]),
+            ("fern.notice", Vec::new()),
+        ];
+        let merged = merge_directives(original, &blocks);
+        assert!(merged.contains("# 顶部注释"));
+        assert!(merged.contains("Fern.Root \"/new share\""));
+        assert!(!merged.contains("Fern.Root /old"));
+        assert!(merged.contains("Fern.Listen 4545"));
+        assert!(!merged.contains("Fern.Listen 1"));
+        assert!(!merged.contains("Fern.Listen 2"));
+        assert!(merged.contains("Fern.User RLUM alice secret"));
+        assert!(merged.contains("Fern.Guest RL"));
+        assert!(merged.contains("# 回收站"));
+        assert!(merged.contains("Trash.Max.Size 256"));
+        assert!(merged.ends_with('\n'));
+
+        // The merged text must parse again, and a second pass is a no-op.
+        let cfg = Config::from_text(&merged, Path::new("fern.conf")).unwrap();
+        assert_eq!(cfg.listen, vec!["4545".to_string()]);
+        assert_eq!(merge_directives(&merged, &blocks), merged);
+    }
+
+    #[test]
+    fn merge_drops_emptied_directives_and_appends_missing_ones() {
+        let original = "Fern.Root /share\nFern.Notice hello\n";
+        let blocks = vec![
+            ("fern.notice", Vec::new()),
+            ("fern.loglevel", vec!["Fern.LogLevel Debug".to_string()]),
+        ];
+        let merged = merge_directives(original, &blocks);
+        assert!(!merged.contains("Fern.Notice"));
+        assert!(merged.contains("Fern.Root /share"));
+        assert!(merged.contains("Fern.LogLevel Debug"));
+        let cfg = Config::from_text(&merged, Path::new("fern.conf")).unwrap();
+        assert_eq!(cfg.notice, "");
+        assert_eq!(cfg.log_level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn merge_keeps_crlf_files_in_crlf() {
+        let original = "Fern.Root /old\r\nFern.Listen 1\r\n# 注释\r\n";
+        let blocks = vec![("fern.root", vec!["Fern.Root /new".to_string()])];
+        let merged = merge_directives(original, &blocks);
+        assert_eq!(merged, "Fern.Root /new\r\nFern.Listen 1\r\n# 注释\r\n");
+        assert!(!merged.contains("\n\n"));
+    }
+
+    #[test]
+    fn editable_blocks_survive_a_merge_round_trip() {
+        let mut cfg = Config::default();
+        cfg.root = PathBuf::from("/data/my share");
+        cfg.listen = vec!["4545".to_string(), "[::]:9000".to_string()];
+        cfg.log_level = LogLevel::Debug;
+        cfg.log_dir = Some(PathBuf::from("C:\\logs dir"));
+        cfg.title = "我的 网盘".to_string();
+        cfg.guest = 0;
+        let text = merge_directives("", &cfg.editable_blocks());
+        let again = Config::from_text(&text, Path::new("fern.conf")).unwrap();
+        assert_eq!(again.listen, cfg.listen);
+        assert_eq!(again.log_level, cfg.log_level);
+        assert_eq!(again.title, cfg.title);
+        assert_eq!(again.guest, cfg.guest);
+        assert_eq!(again.log_dir, cfg.log_dir);
     }
 }

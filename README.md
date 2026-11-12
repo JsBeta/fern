@@ -22,7 +22,7 @@
 ## 亮点
 
 - **真的零依赖**：`[dependencies]` 为空。HTTP、JSON、URL 编解码、HTTP 日期、base36、MIME、Range、ZIP、gzip/deflate、日志全部手写，构建时不需要联网拉取任何 crate。
-- **体积优先**：`opt-level="z"` + fat LTO + `strip` + `panic="abort"`，Windows x86_64 产物约 **628 KiB**（643 072 字节），armv7 完全静态（musl）约 **678 KiB**；前端 4 个静态文件在构建期压成 gzip（58 KB → 19 KB）内嵌进二进制，首次请求时解压并缓存。
+- **体积优先**：`opt-level="z"` + fat LTO + `strip` + `panic="abort"`，Windows x86_64 产物约 **675 KiB**（691 200 字节），armv7 完全静态（musl）约 **678 KiB**；前端 4 个静态文件在构建期压成 gzip（58 KB → 19 KB）内嵌进二进制，首次请求时解压并缓存。
 - **无 async runtime**：`TcpListener` + 每连接一线程（默认上限 128、线程栈 128 KiB），调用栈清晰、便于调试，也方便在 Windows 7 这类老系统上做静态链接。
 - **协议细节齐全**：`Range` / `416` / `ETag` / `304`、`Expect: 100-continue`、HTTP/1.1 keep-alive（每连接 100 请求上限）、目录流式 ZIP、上传断点续传。
 - **安全默认**：路径穿越拦截（`..`、`%2e%2e`、`..%5c`、符号链接逃逸）、登录失败限流（5 分钟 5 次）、会话 `HttpOnly` + `SameSite=Lax`、JSON 请求体上限 4 MiB、请求头上限、120 s 读写超时、CSP 与 `X-Frame-Options: DENY`、`.Trash` 只经 API 访问。
@@ -48,7 +48,7 @@
 | `src/auth.rs` | 用户校验、会话 token、失败次数限流 |
 | `src/config.rs` / `src/cli.rs` | `fern.conf` 与命令行解析、环境变量覆盖 |
 | `src/json.rs` / `src/range.rs` / `src/mime.rs` / `src/util.rs` / `src/log.rs` | 基础库 |
-| `src/platform/` | Windows（托盘/服务/防火墙/浏览器/控制台接管）、Unix（rlimit/chroot/setuid/syslog）、兜底 |
+| `src/platform/` | Windows（托盘/配置窗体/服务/防火墙/浏览器/控制台接管）、Unix（rlimit/chroot/setuid/syslog）、兜底 |
 | `ui/` + `tools/make-icon.ps1` | 前端资源源文件与图标。脚本用 .NET 自带的 `System.Drawing` 画出 16/20/24/32/48/256 六个尺寸写进 `ui/fern.ico`；`ui/fern.rc` 声明 `1 ICON "fern.ico"`，`build.rs` 用 `windres` 把它编进 exe 的 `.rsrc`，托盘代码再用 `LoadImageW` 从同一份资源取出图标（不 `include_bytes!`，`.ico` 只存一份）；脚本不参与 `cargo build`，改图标几何时需同步 `ui/tray-icon.svg`（设计稿）与脚本，再手动重跑 |
 
 ---
@@ -105,7 +105,7 @@ ssh user@board '/tmp/fern --check -c /tmp/fern.conf && /tmp/fern -w /tmp/share -
 
 仓库不提供 `rust-toolchain.toml`：在 Windows 上 `channel = "1.77.2"` 会被解析为 MSVC 宿主工具链（本机没有 `link.exe`），因此请按上面的命令显式安装并使用 gnu 工具链，或在单目录执行 `rustup override set 1.77.2-x86_64-pc-windows-gnu`。
 
-产物体积（x86_64-pc-windows-gnu，`opt-level="z"` + fat LTO + strip）：约 **628 KiB**（643 072 字节，其中 `.rsrc` 段的 23.5 KB 是 `fern.ico`，同一份图标同时供资源管理器与托盘使用）。同样参数下「Hello world」的 Rust 静态链接二进制本身就有 253 KiB，因此 500 KiB 目标在当前技术选型下达不到——这是 Rust `std` + 静态 CRT 的下限。
+产物体积（x86_64-pc-windows-gnu，`opt-level="z"` + fat LTO + strip）：约 **675 KiB**（691 200 字节，其中 `.rsrc` 段的 23.5 KB 是 `fern.ico`，同一份图标同时供资源管理器与托盘使用）。同样参数下「Hello world」的 Rust 静态链接二进制本身就有 253 KiB，因此 500 KiB 目标在当前技术选型下达不到——这是 Rust `std` + 静态 CRT 的下限。
 
 体积上已经做过的两处取舍（都不会改变外部行为）：
 
@@ -208,6 +208,7 @@ GUI 子系统默认拿不到 stdout/stderr。为了在终端里依然可用，�
 | `Fern.Root` / `Fern.Listen` / `Fern.User` / `Fern.Guest` | 共享目录、监听地址、用户与访客权限 |
 | `Fern.Hide` / `Fern.Browser` | 隐藏托盘图标、指定托盘打开的浏览器 |
 | `Fern.MaxConns` / `Fern.LogDir` | 并发上限、按天日志目录 |
+| `Fern.LogLevel` | 日志级别：`error` / `warn` / `info`（默认）/ `debug` |
 | `Fern.Title` / `Fern.Notice` | 界面标题（默认 `fern`）与页头通知，见 §5.2 |
 | `Fern.Mime <file>` | MIME 覆盖表 |
 | `Trash.Enabled` / `Trash.Max.Days` / `Trash.Max.Size` / `Trash.Keep.Same` | 回收站保留策略（见 §5.1） |
@@ -217,6 +218,27 @@ MIME 覆盖文件每行 `<ext> <type>` 或 `<type> <ext> <ext>...`；工作目�
 未指定 `-c` 时配置文件按**进程工作目录**查找 `./fern.conf`（Unix 上再找 `/etc/fern.conf`），不是按 exe 所在目录。所以在快捷方式、计划任务或别的目录里启动时，容易“配置文件没生效、权限全是默认值”。相对路径的 `Fern.Root` 同样相对工作目录解析。`--check` 会打印实际生效的端口、根目录与权限，可用来确认读到的是哪个配置。
 
 **根目录的确定顺序**：`-w` > `Fern.Root` > 没找到配置文件时回退到 `fern.exe` 所在目录 > `./web`。也就是说，只要把一个 `fern.exe` 拷到任意目录双击，共享的就是这个目录本身（此时 `fern.exe` 与 `fern.conf` 也会出现在列表里）。
+
+### 4.1 托盘「配置」窗口（Windows）
+
+托盘右键菜单里的「配置」会打开一个 520 宽、高度随内容自适应的窗体（控件排完后用 `AdjustWindowRectEx` 反算外框、`SetWindowPos` 居中，小屏取屏幕工作区尺寸避免越界），用原生 Win32 控件（没有引入任何 GUI 库）直接编辑当前生效的配置：
+
+| 控件 | 写回的指令 |
+|---|---|
+| 共享目录（带「浏览…」目录选择框） | `Fern.Root` |
+| 监听地址（空格分隔，支持 `4545`、`0.0.0.0:4545`、`[::]:4545,Dual`） | `Fern.Listen`（可多行） |
+| 日志级别（错误 / 警告 / 信息 / 调试） | `Fern.LogLevel` |
+| 最大连接数 | `Fern.MaxConns` |
+| 访客权限（`RLUMSTD` 或 `0`） | `Fern.Guest` |
+| 页面标题 / 顶部公告 | `Fern.Title` / `Fern.Notice` |
+| 日志目录（留空即输出到控制台） | `Fern.LogDir` |
+| 启用回收站 + 保留天数 | `Trash.Enabled` / `Trash.Max.Days` |
+
+保存时只**就地改写这些指令所在的行**，文件里的注释、空行以及窗口不展示的指令（`Fern.User`、`Fern.Mime`、`Trash.Max.Size`、`Trash.Keep.Same` 等）原样保留。写盘之前先用 `Config::from_text` 把合并结果整体解析一遍，有拼写或取值错误就弹窗提示并**不落盘**，正在运行的配置不受影响。
+
+写盘成功后立即热加载：`log::init` 换掉日志级别与目录、`Server::reload` 换掉共享目录/并发上限/访客权限/标题/公告，无需重启。唯一无法在线切换的是**监听地址**——监听线程卡在 `accept()` 里无法唤醒，所以改了端口会按托盘「重启」的同一条路径交接（移除图标 → 以原命令行加 `--wait-pid <旧 pid>` 启动新实例 → 退出旧进程）；弹窗会明确提示「fern 将重启」。配置文件路径沿用当前生效的 `-c` 或默认查找结果，找不到时回退到 `fern.exe` 同目录的 `fern.conf`。
+
+由 `Fern.Hide 1` 隐藏托盘时没有菜单入口，此时请直接编辑配置文件。
 
 ---
 
@@ -325,7 +347,7 @@ Fern.Notice "每周日 02:00-03:00 停机维护"
 ## 6. 测试与验证状态
 
 ```powershell
-cargo test     # 57 个单元测试 + 28 个端到端集成测试
+cargo test     # 68 个单元测试 + 29 个端到端集成测试
 ```
 
 集成测试（`tests/integration.rs`）会真实启动编译出的二进制，覆盖：静态资源与 304、访客权限、Range/416/条件下载、目录 302、路径穿越、登录与文件管理（mkdir/rename/delete → `.Trash`）、复制（目录递归、同名递增、跨目录、权限与错误码）、新建空文件（重名 `409`、非法名称 `400`、权限）、回收站列表/恢复/冲突覆盖/清除与权限、分块续传与 409 偏移纠正、标题与通知配置（默认值与 `Fern.Title` / `Fern.Notice` 覆盖）、方法与路由守卫、Keep-alive 连接复用与关闭语义。
@@ -339,13 +361,13 @@ cargo test     # 57 个单元测试 + 28 个端到端集成测试
 - 浏览器实测首页渲染正常（顶栏权限、面包屑、工具栏、列表、状态栏）；`#/__trash` 回收站页面渲染、选中、恢复、彻底删除、清空与「返回文件」跳转均通过。
 - 浏览器实测工具栏吸顶：60 个文件的目录滚动 1400 px 后工具栏 `getBoundingClientRect().top` 恒为 `0`、`elementFromPoint` 命中的是工具栏而不是列表行，此时直接点「新建文件夹」按钮能触发；滚回顶部阴影消失。400 px 窄屏下工具栏换行成两行仍吸顶、无横向溢出、按钮可点。
 - 浏览器实测「复制」→「粘贴副本」在源目录生成 `hello - 副本.txt`，再次粘贴得到 `hello - 副本 (2).txt`；`Ctrl+X` → 切换目录 →「粘贴」的移动流程未受影响。
-- 托盘图标创建成功（日志 `tray icon added`），通知区域显示的是 `ui/fern.ico` 的 fern 图标而非系统通用图标；图标由 `windres` 编进 `.rsrc`（`RT_GROUP_ICON` id 1 + 6 个 `RT_ICON`），托盘用 `LoadImageW` 按 `SM_CXSMICON` 取出（16/20/24/32/48/256 六个尺寸都在组内，缩放交给系统）；`ExtractAssociatedIcon` 也能从 exe 取出 32×32 图标，即资源管理器显示的是同一份图标。托盘右键菜单自上而下为「打开 / 重启 / 关于 / 退出」（前三项之后一条分隔线）。「打开」用浏览器打开服务地址；「重启」先移除图标、结束当前进程，再以原命令行加 `--wait-pid <旧 pid>` 启动新实例（新实例等旧进程退出、端口释放后再绑定，且不再重复打开浏览器）；监听 socket 在 `bind` 后与 `try_clone` 后都会清掉 `HANDLE_FLAG_INHERIT`，否则子进程会继承旧监听句柄、自己 `bind` 必然得到 `WSAEADDRINUSE`（os error 10048），交接路径另有 20 次 × 150 ms 的 `AddrInUse` 重试兜底；实测 4803 与 80 端口各连续重启 3 次，每次都出现 `listening on ...`、HTTP 200、只有一个进程、无 `#32770` 错误弹窗；「关于」弹出 `MessageBoxW` 显示版本与服务地址；「退出」会先移除图标再结束进程（日志 `exit requested from the tray menu`，退出码 0、端口立即释放），不会留下无图标的服务器继续监听。
+- 托盘图标创建成功（日志 `tray icon added`），通知区域显示的是 `ui/fern.ico` 的 fern 图标而非系统通用图标；图标由 `windres` 编进 `.rsrc`（`RT_GROUP_ICON` id 1 + 6 个 `RT_ICON`），托盘用 `LoadImageW` 按 `SM_CXSMICON` 取出（16/20/24/32/48/256 六个尺寸都在组内，缩放交给系统）；`ExtractAssociatedIcon` 也能从 exe 取出 32×32 图标，即资源管理器显示的是同一份图标。托盘右键菜单自上而下为「打开 / 配置 / 重启 / 关于 / 退出」（前三项之后一条分隔线）。「打开」用浏览器打开服务地址；「配置」弹出原生 Win32 窗体，可改共享目录、监听地址、日志级别、并发上限、访客权限、标题/公告、日志目录与回收站策略，保存时保留文件里的注释与未展示指令、先用 `Config::from_text` 校验再落盘，随后热加载（改端口走 `--wait-pid` 交接重启），详见 §4.1；「重启」先移除图标、结束当前进程，再以原命令行加 `--wait-pid <旧 pid>` 启动新实例（新实例等旧进程退出、端口释放后再绑定，且不再重复打开浏览器）；监听 socket 在 `bind` 后与 `try_clone` 后都会清掉 `HANDLE_FLAG_INHERIT`，否则子进程会继承旧监听句柄、自己 `bind` 必然得到 `WSAEADDRINUSE`（os error 10048），交接路径另有 20 次 × 150 ms 的 `AddrInUse` 重试兜底；实测 4803 与 80 端口各连续重启 3 次，每次都出现 `listening on ...`、HTTP 200、只有一个进程、无 `#32770` 错误弹窗；「关于」弹出 `MessageBoxW` 显示版本与服务地址；「退出」会先移除图标再结束进程（日志 `exit requested from the tray menu`，退出码 0、端口立即释放），不会留下无图标的服务器继续监听。
 - 无控制台行为：`release` 产物 PE 头 `Subsystem = 2`（GUI）；用 `Win32_Process.Create` 模拟资源管理器启动（父进程无控制台）后枚举该进程顶层窗口，只有隐藏的 `fern_tray_window` 与系统 IME 窗口，**没有** `ConsoleWindowClass`，即双击不弹黑框。从真实控制台运行 `--version` / `--check` 时输出正常落在该控制台（截图核对 `fern 0.1.0` 与六项生效值）；`Start-Process -RedirectStandardOutput` 也能拿到 `fern 0.1.0`，说明重定向句柄没有被 `SetStdHandle` 破坏。托盘「打开浏览器」走了 `CREATE_NO_WINDOW` 的 `cmd start`：触发前后桌面控制台窗口数不变，且日志里随即出现 `_api/session`、`_api/list` 请求，浏览器正常打开。
 - 浏览器实测 `Fern.Title` / `Fern.Notice`：标签页标题与顶栏品牌文字随配置变化，通知为空时不占位。
 - 浏览器实测图标工具栏：15 个按钮全部为内联 SVG（`stroke: currentColor`，18 px，随深/浅色自动变色），逐个放大截图核对图形正确（新建文件夹为加粗外框的文件夹 + 加号，文件夹外框收窄加高至接近正方形、不再是扁长方形，上传文件夹为与「新建文件夹」一致的外框内嵌一支向上箭头（箭头完整收在文件夹轮廓内，不越出边框），回收站为三箭头循环三角且箭头与下一段箭杆之间留有明显缺口（放大后不粘连）、进入回收站后换成回旋返回箭头）；悬停 `::after` 气泡 `opacity` 由 `0` 变为 `1`、`content` 为对应 `data-tip`，气泡向下弹出不遮挡吸顶条；400 px 窄屏下工具栏 `scrollWidth === clientWidth`、页面 `documentElement.scrollWidth === clientWidth`，无横向溢出。状态类按钮随上下文切换：选中文件后出现「复制/重命名/删除/下载」，复制后「粘贴」变为「粘贴副本」（同时 `data-tip` 与 `aria-label` 更新），进入回收站后图标切为返回箭头、提示变为「返回文件」，回退后复原。
 - 内嵌资源 gzip 往返验证：单元测试比对 `include_bytes!(ui/*)` 与解压结果一致，集成测试 `serves_ui_and_assets` 校验响应体与源码逐字节相同；实测 `/`、`/assets/app.js`、`/assets/style.css`、`/assets/favicon.svg` 的 `Content-Length` 分别为 6379 / 43682 / 13000 / 873，`If-None-Match` 复验返回 `304`。
 - 浏览器实测拖拽上传：从资源管理器把整个目录拖进列表，`webkitGetAsEntry()` 递归遍历（`readEntries` 每批 100 项需循环取空）后按相对路径 `PUT /_api/upload?name=site/assets/a.css` 逐文件上传，磁盘得到完整目录树 `site/{index.html,assets/{a.css,b.js},empty/}`，不再出现 0 KB 空文件；空目录 `site/empty` 由 `POST /_api/mkdir` 补齐（已存在时容忍 `409`）。目录 + 单个文件混拖、纯文本拖放均正常。
-- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：696 380 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 643 072 字节（`.rsrc` 内 23.5 KB 图标，资源管理器与托盘共用同一份），`cargo test` 50 + 25 全绿。
+- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：696 380 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 691 200 字节（`.rsrc` 内 23.5 KB 图标，资源管理器与托盘共用同一份），`cargo test` 68 + 29 全绿。
 
 未验证 / 未实现：
 

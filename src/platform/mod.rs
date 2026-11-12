@@ -8,6 +8,8 @@ use std::sync::Arc;
 #[cfg(windows)]
 mod console_win;
 #[cfg(windows)]
+mod config_win;
+#[cfg(windows)]
 mod win;
 #[cfg(windows)]
 mod tray_win;
@@ -121,6 +123,7 @@ pub fn check_only(cfg: &Config) -> Result<(), String> {
         );
     }
     println!("  max conns   : {}", cfg.max_conns);
+    println!("  log level   : {}", cfg.log_level.as_str());
     println!("  title       : {}", cfg.title);
     if !cfg.notice.is_empty() {
         println!("  notice      : {}", cfg.notice);

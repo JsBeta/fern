@@ -1,6 +1,12 @@
 # fern configuration sample.
 # The file must be UTF-8. Directives and values are case-insensitive.
 # Lines starting with '#' are comments.
+#
+# On Windows the tray menu item "配置" edits the values it knows about
+# (root, listen, log level, max conns, guest perms, title, notice, log dir,
+# trash) and reloads the running server after saving. It rewrites only those
+# directives in place: comments and the directives it never shows survive, so
+# this file stays safe to edit by hand as well.
 
 # Directory shared on the network. Relative paths resolve against the
 # process working directory. Quote paths that contain spaces.
@@ -49,6 +55,11 @@ Fern.User RLUMST user pass
 
 # Write daily log files (fern-YYYY-MM-DD.log) into this directory.
 # Fern.LogDir logs
+
+# Verbosity written to the console / log file / syslog:
+#   error | warn | info (default) | debug
+# Applied immediately when changed from the tray "配置" window.
+# Fern.LogLevel info
 
 # Recycle bin. Deleted entries move into the .Trash of the volume they live
 # on (normally <root>/.Trash/<id>/, holding meta.json + data/) instead of being

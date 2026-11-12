@@ -2,9 +2,9 @@
 //! override file (`<ext> <type>` or `<type> <ext> <ext>...`).
 
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
-static OVERRIDES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+static OVERRIDES: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
 
 pub fn load_overrides(paths: &[&Path]) {
     let mut table: Vec<(String, String)> = Vec::new();
@@ -32,7 +32,7 @@ pub fn load_overrides(paths: &[&Path]) {
             }
         }
     }
-    let _ = OVERRIDES.set(table);
+    let _ = OVERRIDES.write().map(|mut slot| *slot = table);
 }
 
 pub fn for_path(path: &Path) -> String {
@@ -41,8 +41,8 @@ pub fn for_path(path: &Path) -> String {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default();
-    if let Some(table) = OVERRIDES.get() {
-        for (e, t) in table {
+    if let Ok(table) = OVERRIDES.read() {
+        for (e, t) in table.iter() {
             if *e == ext {
                 return t.clone();
             }

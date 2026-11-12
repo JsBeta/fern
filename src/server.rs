@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 const CSP: &str = "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; \
@@ -27,7 +27,9 @@ form-action 'self'; frame-ancestors 'none'";
 const MAX_KEEPALIVE_REQUESTS: u32 = 100;
 
 pub struct Server {
-    pub cfg: Arc<Config>,
+    /// Swapped atomically by the tray configuration window so a reload never
+    /// changes the values one request is already working with.
+    cfg: RwLock<Arc<Config>>,
     pub listeners: Vec<TcpListener>,
     pub sessions: Sessions,
     active: AtomicUsize,
@@ -179,13 +181,27 @@ fn disown(_listener: &TcpListener) {}
 impl Server {
     pub fn new(cfg: Arc<Config>, listeners: Vec<TcpListener>) -> Self {
         Server {
-            cfg,
+            cfg: RwLock::new(cfg),
             listeners,
             sessions: Sessions::new(),
             active: AtomicUsize::new(0),
             shutdown: Arc::new(AtomicUsize::new(0)),
             disk: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Snapshot of the configuration currently in effect.
+    pub fn cfg(&self) -> Arc<Config> {
+        self.cfg
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Replaces the live configuration. `main` always re-reads the config
+    /// through this after the tray window saved a new file.
+    pub fn reload(&self, cfg: Config) {
+        *self.cfg.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(cfg);
     }
 
     /// Volume capacity for the volume holding `path`, refreshed at most every
@@ -238,14 +254,19 @@ impl Server {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
                 continue;
             }
-            if self.active.load(Ordering::Relaxed) >= self.cfg.max_conns {
+            let cfg = self.cfg();
+            if self.active.load(Ordering::Relaxed) >= cfg.max_conns {
+                crate::log::debug(&format!(
+                    "refusing {}: connection limit {} reached",
+                    peer, cfg.max_conns
+                ));
                 let _ = stream.shutdown(std::net::Shutdown::Both);
                 continue;
             }
             self.active.fetch_add(1, Ordering::Relaxed);
             let me = self.clone();
             let spawned = std::thread::Builder::new()
-                .stack_size(self.cfg.thread_stack)
+                .stack_size(cfg.thread_stack)
                 .spawn(move || {
                     if let Err(e) = me.handle_conn(stream, peer) {
                         crate::log::error(&format!("connection {}: {}", peer, e));
@@ -286,7 +307,8 @@ impl Server {
             }
 
             let token = req.cookie(auth::SESSION_COOKIE);
-            let identity = auth::identify(&self.cfg, &self.sessions, token);
+            let cfg = self.cfg();
+            let identity = auth::identify(&cfg, &self.sessions, token);
             // Bodies are not drained here, so only body-less requests may reuse
             // the connection; uploads keep the one-shot behaviour of before.
             let keep_alive = served + 1 < MAX_KEEPALIVE_REQUESTS
@@ -294,7 +316,7 @@ impl Server {
                 && !matches!(req.method.as_str(), "POST" | "PUT")
                 && req.content_length().unwrap_or(0) == 0;
             let remote = peer.ip().to_string();
-            let resp = self.dispatch(&req, &identity, &remote, &mut reader);
+            let resp = self.dispatch(&cfg, &req, &identity, &remote, &mut reader);
             let status = resp.status;
             let result = http::write_response(&mut stream, &req.method, resp, keep_alive);
             crate::log::info(&format!(
@@ -314,6 +336,7 @@ impl Server {
 
     fn dispatch<S: io::Read>(
         &self,
+        cfg: &Config,
         req: &Request,
         id: &Identity,
         remote: &str,
@@ -343,22 +366,23 @@ impl Server {
             };
         }
         if req.path.starts_with("/_api/") {
-            return self.api_route(req, id, remote, reader);
+            return self.api_route(cfg, req, id, remote, reader);
         }
         if req.path.starts_with("/files/") {
             if req.method != "GET" && req.method != "HEAD" {
                 return Response::error(405, "method_not_allowed", "use GET");
             }
-            return self.serve_file(req, id, &req.path["/files".len()..]);
+            return self.serve_file(cfg, req, id, &req.path["/files".len()..]);
         }
         if req.method != "GET" && req.method != "HEAD" {
             return Response::error(405, "method_not_allowed", "use GET");
         }
-        self.serve_file(req, id, &req.path)
+        self.serve_file(cfg, req, id, &req.path)
     }
 
     fn api_route<S: io::Read>(
         &self,
+        cfg: &Config,
         req: &Request,
         id: &Identity,
         remote: &str,
@@ -366,52 +390,52 @@ impl Server {
     ) -> Response {
         let route = &req.path["/_api".len()..];
         match (route, req.method.as_str()) {
-            ("/session", "GET") | ("/session", "HEAD") => api::session_info(&self.cfg, id),
+            ("/session", "GET") | ("/session", "HEAD") => api::session_info(cfg, id),
             ("/login", "POST") => {
                 let mut buf = Vec::new();
                 let limit = req.content_length().unwrap_or(0).min(64 * 1024);
                 let mut taken = std::io::Read::take(&mut *reader, limit);
                 let _ = io::copy(&mut taken, &mut buf);
                 let body = String::from_utf8_lossy(&buf).into_owned();
-                api::login(&self.cfg, &self.sessions, req, &body, remote)
+                api::login(cfg, &self.sessions, req, &body, remote)
             }
             ("/logout", "POST") => api::logout(&self.sessions, id),
-            ("/list", "GET") | ("/list", "HEAD") => api::list(&self.cfg, id, req),
+            ("/list", "GET") | ("/list", "HEAD") => api::list(cfg, id, req),
             ("/disk", "GET") | ("/disk", "HEAD") => {
-                api::disk(&self.cfg, id, req, |p| self.disk_space(p))
+                api::disk(cfg, id, req, |p| self.disk_space(p))
             }
-            ("/mkdir", "POST") => api::mkdir(&self.cfg, id, req, reader),
-            ("/newfile", "POST") => api::new_file(&self.cfg, id, req, reader),
-            ("/rename", "POST") => api::rename(&self.cfg, id, req, reader),
-            ("/copy", "POST") => api::copy(&self.cfg, id, req, reader),
-            ("/delete", "POST") => api::delete(&self.cfg, id, req, reader),
+            ("/mkdir", "POST") => api::mkdir(cfg, id, req, reader),
+            ("/newfile", "POST") => api::new_file(cfg, id, req, reader),
+            ("/rename", "POST") => api::rename(cfg, id, req, reader),
+            ("/copy", "POST") => api::copy(cfg, id, req, reader),
+            ("/delete", "POST") => api::delete(cfg, id, req, reader),
             ("/upload", "PUT") | ("/upload", "POST") => {
-                api::upload(&self.cfg, id, req, reader, |p| self.disk_space(p))
+                api::upload(cfg, id, req, reader, |p| self.disk_space(p))
             }
-            ("/upload", "GET") | ("/upload", "HEAD") => api::upload_probe(&self.cfg, id, req),
-            ("/upload", "DELETE") => api::upload_cancel(&self.cfg, id, req),
-            ("/read", "GET") | ("/read", "HEAD") => api::read_text(&self.cfg, id, req),
-            ("/write", "PUT") | ("/write", "POST") => api::write_text(&self.cfg, id, req, reader),
-            ("/trash", "GET") | ("/trash", "HEAD") => api::trash_list(&self.cfg, id, req),
-            ("/trash/restore", "POST") => api::trash_restore(&self.cfg, id, req, reader),
-            ("/trash/purge", "POST") => api::trash_purge(&self.cfg, id, req, reader),
-            ("/trash/empty", "POST") => api::trash_empty(&self.cfg, id, req, reader),
+            ("/upload", "GET") | ("/upload", "HEAD") => api::upload_probe(cfg, id, req),
+            ("/upload", "DELETE") => api::upload_cancel(cfg, id, req),
+            ("/read", "GET") | ("/read", "HEAD") => api::read_text(cfg, id, req),
+            ("/write", "PUT") | ("/write", "POST") => api::write_text(cfg, id, req, reader),
+            ("/trash", "GET") | ("/trash", "HEAD") => api::trash_list(cfg, id, req),
+            ("/trash/restore", "POST") => api::trash_restore(cfg, id, req, reader),
+            ("/trash/purge", "POST") => api::trash_purge(cfg, id, req, reader),
+            ("/trash/empty", "POST") => api::trash_empty(cfg, id, req, reader),
             _ => Response::error(404, "no_such_endpoint", "unknown API endpoint"),
         }
     }
 
-    fn serve_file(&self, req: &Request, id: &Identity, rel: &str) -> Response {
+    fn serve_file(&self, cfg: &Config, req: &Request, id: &Identity, rel: &str) -> Response {
         if !id.can(PERM_READ) {
             return Response::error(403, "forbidden", "reading files is not permitted");
         }
-        let path = match fsapi::resolve(&self.cfg.root, rel) {
+        let path = match fsapi::resolve(&cfg.root, rel) {
             Ok(p) => p,
             Err(e) => return Response::error(e.status(), e.code(), &e.message()),
         };
-        if let Err(e) = fsapi::ensure_inside(&self.cfg.root, &path) {
+        if let Err(e) = fsapi::ensure_inside(&cfg.root, &path) {
             return Response::error(e.status(), e.code(), &e.message());
         }
-        if crate::trash::is_bin_path(&self.cfg.root, &path) {
+        if crate::trash::is_bin_path(&cfg.root, &path) {
             return Response::error(404, "not_found", "file not found");
         }
         let meta = match std::fs::metadata(&path) {
@@ -424,7 +448,7 @@ impl Server {
             if req.q("zip").is_none() {
                 let target = format!(
                     "/#{}",
-                    util::percent_encode_path(&fsapi::relative(&self.cfg.root, &path))
+                    util::percent_encode_path(&fsapi::relative(&cfg.root, &path))
                 );
                 return Response::new(302)
                     .header("Location", target)
@@ -441,7 +465,7 @@ impl Server {
             }
             // `?path=` repeats to archive just the selected entries, which is
             // how a multi-selection download becomes one archive.
-            return build_selection_zip_response(&self.cfg.root, &path, &names);
+            return build_selection_zip_response(&cfg.root, &path, &names);
         }
         build_file_response(req, &path, meta.len(), modified_secs(&meta))
     }

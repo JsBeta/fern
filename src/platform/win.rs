@@ -17,8 +17,11 @@ pub fn prepare(cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
-pub fn after_start(cfg: &Config, urls: &[String], _server: &Arc<Server>) {
+pub fn after_start(cfg: &Config, urls: &[String], server: &Arc<Server>) {
     let url = default_url(urls);
+    // The form needs the live server handle even when the icon stays hidden, so
+    // installation happens before the `hide` check.
+    crate::platform::config_win::install(server.clone());
     if !cfg.hide {
         if let Some(url) = &url {
             let tip = format!("fern - {}", url);
