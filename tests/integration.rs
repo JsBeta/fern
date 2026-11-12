@@ -8,7 +8,24 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+/// Disambiguates harness directories inside one run: the clock is too coarse to
+/// keep two tests that start in the same tick apart.
+static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn unique_stamp() -> String {
+    format!(
+        "{}-{}-{}",
+        std::process::id(),
+        NEXT_ID.fetch_add(1, Ordering::Relaxed),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    )
+}
 
 struct Harness {
     child: Child,
@@ -34,16 +51,8 @@ impl Harness {
 
     fn start_conf_env(env: &[(&str, &str)], conf: Option<&str>) -> Harness {
         let port = free_port();
-        let stamp = format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
+        let stamp = unique_stamp();
         let root = std::env::temp_dir().join(format!("fern-it-{}", stamp));
-        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("sub")).expect("create root");
         std::fs::write(root.join("hello.txt"), b"hello world").expect("seed file");
         std::fs::write(root.join("sub").join("nested.txt"), b"nested").expect("seed nested");
@@ -53,7 +62,6 @@ impl Harness {
         let mut conf_dir = None;
         if let Some(text) = conf {
             let dir = std::env::temp_dir().join(format!("fern-conf-{}", stamp));
-            let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).expect("create conf dir");
             let text = text
                 .replace("@ROOT@", root.to_str().unwrap())
