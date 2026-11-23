@@ -16,6 +16,7 @@ mod inflate;
 mod json;
 mod log;
 mod mime;
+mod mounts;
 mod platform;
 mod range;
 mod server;

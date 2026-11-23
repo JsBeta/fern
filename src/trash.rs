@@ -182,27 +182,9 @@ fn volume_root(root: &Path, path: &Path) -> Option<PathBuf> {
 
 #[cfg(windows)]
 fn volume_root(root: &Path, path: &Path) -> Option<PathBuf> {
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetVolumePathNameW(path: *const u16, volume: *mut u16, len: u32) -> i32;
-    }
-
     // Also reports folder mount points, which is exactly the partition bound.
     let start = anchor(path)?;
-    let wide: Vec<u16> = start
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut buf = vec![0u16; 1024];
-    let ok = unsafe { GetVolumePathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
-    if ok == 0 {
-        return None;
-    }
-    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
-    let volume = PathBuf::from(std::ffi::OsString::from_wide(&buf[..end]));
+    let volume = crate::mounts::volume_path(&start)?;
     if volume.starts_with(root) {
         Some(volume)
     } else {
@@ -446,6 +428,17 @@ pub fn move_to_trash(root: &Path, path: &Path, by: &str) -> Result<String, FsErr
         return Err(FsError::Forbidden);
     }
     let bin = bin_for(root, path);
+    // A mount point can never become a trash entry: the kernel refuses to
+    // rename it, and its bin would have to live inside the tree being moved.
+    // A tree that contains one would drag the volume into the bin. Refuse
+    // before creating anything so a failed attempt leaves no `.Trash` behind
+    // and no volume registration.
+    if bin.starts_with(path)
+        || crate::mounts::is_mount_point(path)
+        || crate::mounts::contains_mount_point(path)
+    {
+        return Err(FsError::MountPoint);
+    }
     fs::create_dir_all(&bin)?;
     let tag = match bin.parent() {
         Some(volume) if volume != root && volume.starts_with(root) => {

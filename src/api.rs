@@ -422,20 +422,40 @@ pub fn rename<R: Read>(
     }
 }
 
-/// Appends ` - 副本`, before the extension of a file, until the name is free
-/// inside `dir`. `a.txt` → `a - 副本.txt` → `a - 副本 (2).txt` → …
-fn sibling_name(dir: &Path, name: &str, is_dir: bool) -> String {
+/// Picks the name for a copy inside `dir`.
+///
+/// A copy pasted next to its source is always suffixed (`a.txt` →
+/// `a_副本.txt`, then `a_副本 (2).txt`) so it cannot collide with the original.
+/// A copy into another directory keeps the original name when it is still
+/// free, and only falls back to the suffix when something already uses it.
+fn copy_name(dir: &Path, name: &str, is_dir: bool, same_dir: bool) -> String {
+    if !same_dir && !dir.join(name).exists() {
+        return name.to_string();
+    }
     let (stem, ext) = match name.rfind('.') {
         Some(idx) if !is_dir && idx > 0 => (&name[..idx], &name[idx..]),
         _ => (name, ""),
     };
-    let mut candidate = format!("{} - 副本{}", stem, ext);
+    let mut candidate = format!("{}_副本{}", stem, ext);
     let mut n = 2;
     while dir.join(&candidate).exists() {
-        candidate = format!("{} - 副本 ({}){}", stem, n, ext);
+        candidate = format!("{}_副本 ({}){}", stem, n, ext);
         n += 1;
     }
     candidate
+}
+
+/// Compares two directories through symlinks and drive-letter casing, so a
+/// paste that reaches the source directory by another spelling still counts as
+/// the same directory.
+fn same_directory(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 /// Copies entries into a directory, giving every copy a distinct name. The
@@ -501,7 +521,11 @@ pub fn copy<R: Read>(
             ));
             continue;
         }
-        let target = dest_path.join(sibling_name(&dest_path, &name, is_dir));
+        let same_dir = path
+            .parent()
+            .map(|parent| same_directory(parent, &dest_path))
+            .unwrap_or(false);
+        let target = dest_path.join(copy_name(&dest_path, &name, is_dir, same_dir));
         match fsapi::copy_entry(&cfg.root, &path, &target) {
             Ok(()) => {
                 copied += 1;
@@ -542,6 +566,23 @@ pub fn delete<R: Read>(
         Some(v) if !v.is_empty() => v,
         _ => return Response::error(400, "bad_request", "paths must be a non empty array"),
     };
+    // A mount point anywhere in the selection blocks the whole batch: the user
+    // has to unmount it, and deleting the other entries first would only hide
+    // which item was refused. The per-entry guards stay as a safety net for
+    // callers that bypass this endpoint.
+    for item in list {
+        let rel = match item.as_str() {
+            Some(s) if !s.is_empty() && s != "/" => s,
+            _ => continue,
+        };
+        if let Ok(path) = fsapi::resolve(&cfg.root, rel) {
+            if crate::mounts::is_mount_point(&path)
+                || crate::mounts::contains_mount_point(&path)
+            {
+                return err_response(&fsapi::FsError::MountPoint);
+            }
+        }
+    }
     let mut moved = 0u32;
     let mut last_error: Option<Response> = None;
     for item in list {
@@ -1116,6 +1157,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn copy_name_keeps_the_original_outside_the_source_directory() {
+        let root = temp_root("copy-name");
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::create_dir_all(root.join("pkg")).unwrap();
+
+        // Next to the source every copy is suffixed.
+        assert_eq!(copy_name(&root, "a.txt", false, true), "a_副本.txt");
+        assert_eq!(copy_name(&root, "pkg", true, true), "pkg_副本");
+
+        // Another directory keeps the name while it is free.
+        let target = root.join("target");
+        assert_eq!(copy_name(&target, "a.txt", false, false), "a.txt");
+
+        // A collision there falls back to the suffix and then numbers up.
+        std::fs::write(target.join("a.txt"), b"x").unwrap();
+        assert_eq!(copy_name(&target, "a.txt", false, false), "a_副本.txt");
+        std::fs::write(target.join("a_副本.txt"), b"y").unwrap();
+        assert_eq!(copy_name(&target, "a.txt", false, false), "a_副本 (2).txt");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn upload_request(total: u64, len: u64) -> Request {

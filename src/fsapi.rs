@@ -20,6 +20,10 @@ pub enum FsError {
     /// The volume cannot take the bytes. Reported separately from `Io` because
     /// it is a capacity problem the user can act on, not a server fault.
     NoSpace,
+    /// The path is the root of a mounted volume. It cannot be removed, renamed
+    /// or replaced: the kernel refuses to move a mount point, and deleting the
+    /// tree would destroy the volume's contents.
+    MountPoint,
     Io(io::Error),
 }
 
@@ -68,6 +72,7 @@ impl FsError {
             FsError::NotFound => 404,
             FsError::Forbidden => 403,
             FsError::NoSpace => 507,
+            FsError::MountPoint => 409,
             FsError::Io(_) => 500,
         }
     }
@@ -78,6 +83,7 @@ impl FsError {
             FsError::NotFound => "not_found",
             FsError::Forbidden => "forbidden",
             FsError::NoSpace => "no_space",
+            FsError::MountPoint => "mount_point",
             FsError::Io(_) => "io_error",
         }
     }
@@ -88,6 +94,9 @@ impl FsError {
             FsError::NotFound => "not found".into(),
             FsError::Forbidden => "permission denied".into(),
             FsError::NoSpace => "not enough space on the volume".into(),
+            FsError::MountPoint => {
+                "a mount point is involved; unmount it on the server first".into()
+            }
             FsError::Io(e) => e.to_string(),
         }
     }
@@ -263,6 +272,11 @@ pub fn rename(root: &Path, from: &Path, to: &Path) -> Result<(), FsError> {
     if !from.exists() {
         return Err(FsError::NotFound);
     }
+    // Moving a mount point would unmount the volume; the kernel refuses it,
+    // but reporting the reason as "resource busy" helps nobody.
+    if crate::mounts::is_mount_point(from) {
+        return Err(FsError::MountPoint);
+    }
     if to.exists() {
         return Err(FsError::Io(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -279,6 +293,12 @@ pub fn rename(root: &Path, from: &Path, to: &Path) -> Result<(), FsError> {
 }
 
 pub fn remove_entry(path: &Path) -> Result<(), FsError> {
+    // `remove_dir_all` on a mount point would empty the mounted volume before
+    // failing to remove the mount point itself, and a tree that contains a
+    // mounted volume has the same problem one level down.
+    if crate::mounts::is_mount_point(path) || crate::mounts::contains_mount_point(path) {
+        return Err(FsError::MountPoint);
+    }
     let meta = fs::symlink_metadata(path)?;
     if meta.is_dir() {
         fs::remove_dir_all(path)?;
@@ -536,6 +556,14 @@ mod tests {
         assert!(is_internal_name("a.fernpart"));
         assert!(!is_internal_name("a.txt"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn mount_points_are_reported_as_a_conflict() {
+        let err = FsError::MountPoint;
+        assert_eq!(err.status(), 409);
+        assert_eq!(err.code(), "mount_point");
+        assert!(err.message().contains("mount point"));
     }
 
     #[test]

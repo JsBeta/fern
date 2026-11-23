@@ -487,20 +487,21 @@ fn copy_duplicates_files_and_folders() {
     let cookie = h.login();
     let auth = [("Cookie", cookie.as_str())];
 
-    // A directory copy recreates the whole tree under a suffixed name.
+    // A copy pasted next to its source is suffixed so it cannot collide.
     let resp = h.request_with("POST", "/_api/copy", br#"{"paths":["sub"],"dest":"/"}"#, &auth);
     assert_eq!(resp.status, 200, "{}", resp.text());
     assert!(contains(&resp.text(), "\"copied\":1"));
-    let copy = h.root.join("sub - 副本");
+    let copy = h.root.join("sub_副本");
     assert!(copy.join("nested.txt").is_file(), "directory copy must recurse");
     assert!(h.root.join("sub").join("nested.txt").is_file(), "source must survive");
 
     // Pasting twice into the same directory never overwrites.
     let resp = h.request_with("POST", "/_api/copy", br#"{"paths":["sub"],"dest":"/"}"#, &auth);
     assert_eq!(resp.status, 200, "{}", resp.text());
-    assert!(h.root.join("sub - 副本 (2)").join("nested.txt").is_file());
+    assert!(h.root.join("sub_副本 (2)").join("nested.txt").is_file());
 
-    // Files keep their extension and can be copied into another directory.
+    // Another directory keeps the original name; only a real collision in
+    // that directory falls back to the suffix.
     std::fs::create_dir_all(h.root.join("target")).unwrap();
     let resp = h.request_with(
         "POST",
@@ -509,7 +510,22 @@ fn copy_duplicates_files_and_folders() {
         &auth,
     );
     assert_eq!(resp.status, 200, "{}", resp.text());
-    assert!(h.root.join("target").join("hello - 副本.txt").is_file());
+    assert!(h.root.join("target").join("hello.txt").is_file());
+    assert!(!h.root.join("target").join("hello_副本.txt").exists());
+
+    let resp = h.request_with(
+        "POST",
+        "/_api/copy",
+        br#"{"paths":["hello.txt"],"dest":"/target"}"#,
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert!(h.root.join("target").join("hello_副本.txt").is_file());
+
+    // A file pasted into its own directory keeps its extension.
+    let resp = h.request_with("POST", "/_api/copy", br#"{"paths":["hello.txt"],"dest":"/"}"#, &auth);
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert!(h.root.join("hello_副本.txt").is_file());
 
     let resp = h.request_with("POST", "/_api/copy", br#"{"paths":["missing"],"dest":"/"}"#, &auth);
     assert_eq!(resp.status, 404, "{}", resp.text());
@@ -818,7 +834,7 @@ fn copy_requires_modify_permission() {
     let h = Harness::start();
     let resp = h.request("POST", "/_api/copy", br#"{"paths":["hello.txt"],"dest":"/"}"#);
     assert_eq!(resp.status, 403, "{}", resp.text());
-    assert!(!h.root.join("hello - 副本.txt").exists());
+    assert!(!h.root.join("hello_副本.txt").exists());
 }
 
 #[test]

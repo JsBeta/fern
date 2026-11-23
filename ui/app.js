@@ -78,6 +78,16 @@ function toast(message) {
   toast.timer = setTimeout(() => { node.hidden = true; }, 2600);
 }
 
+// A mount point is refused server side; the raw message is English and does
+// not tell the user what to do about it.
+const MOUNT_HINT =
+  '该目录是或包含挂载的磁盘（挂载点），不能从网页删除或移动。' +
+  '请先在服务器上执行 umount 卸载，卸载后它才是普通目录。';
+
+function fsErrorText(e) {
+  return e.data && e.data.error === 'mount_point' ? MOUNT_HINT : e.message;
+}
+
 function fmtSize(bytes) {
   if (bytes < 1024) return bytes + ' B';
   const units = ['KB', 'MB', 'GB', 'TB', 'PB'];
@@ -609,7 +619,7 @@ async function renameSelected() {
     });
     state.selected.clear();
     await load();
-  } catch (e) { toast('重命名失败：' + e.message); }
+  } catch (e) { toast('重命名失败：' + fsErrorText(e)); }
 }
 
 async function deleteSelected() {
@@ -626,7 +636,7 @@ async function deleteSelected() {
     toast(permanent ? '已永久删除 ' + names.length + ' 项' : '已移入回收站');
     state.selected.clear();
     await load();
-  } catch (e) { toast('删除失败：' + e.message); }
+  } catch (e) { toast('删除失败：' + fsErrorText(e)); }
 }
 
 // --------------------------------------------------------------- recycle bin
@@ -725,8 +735,8 @@ async function paste() {
   const clip = state.clip;
   const { mode, dir, names } = clip;
   if (mode === 'copy') {
-    // Copying is allowed into the source directory itself: every copy gets a
-    // "- 副本" suffix so it never collides with the original.
+    // Copies into the source directory are suffixed server side (`_副本`);
+    // copies elsewhere keep the original name unless it is already taken.
     const paths = names.map((name) => joinPath(dir, name));
     // Drop the clip first so the button hides at once and a second click
     // cannot queue a duplicate request; restore it only if the copy failed.
@@ -755,7 +765,7 @@ async function paste() {
       await post('/rename', { from: joinPath(dir, name), to: target });
       moved++;
     } catch (e) {
-      toast('移动 ' + name + ' 失败：' + e.message);
+      toast('移动 ' + name + ' 失败：' + fsErrorText(e));
     }
   }
   state.clip = null;

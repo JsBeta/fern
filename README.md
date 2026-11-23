@@ -10,7 +10,7 @@
 |---|---|
 | 浏览与下载 | 目录列表、面包屑、键盘多选、深色/浅色自适应；工具栏吸顶，长列表滚动时操作按钮始终可点；工具栏为内联 SVG 纯图标 + 悬停气泡提示（随状态切换图标与文案）；`/<path>` 直链下载，目录 `302` 到前端路由 |
 | 上传 | 拖拽上传、整目录上传、分块断点续传（`.fernpart` 分片，刷新或重试后自动续传）、取消即清理残留 |
-| 文件管理 | 新建文件夹/空文件、重命名、复制（目录递归，重名自动「- 副本 (2)」）、剪切移动、删除 |
+| 文件管理 | 新建文件夹/空文件、重命名、复制（目录递归；粘贴到同一目录自动「_副本」，粘贴到其他目录保留原名）、剪切移动、删除 |
 | 在线编辑 | UTF-8 文本读写，保留 BOM 与原权限位；`mtimeMs` 冲突检测，支持强制覆盖 |
 | 回收站 | 按分区存放的目录式 `.Trash/<id>/{meta.json,data/}`：浏览、恢复（可覆盖）、彻底删除、清空，按天数/同名份数/总容量自动淘汰 |
 | 打包下载 | 目录流式 ZIP，存储式写入，`Content-Length` 在响应头即可知，边打包边发送 |
@@ -261,7 +261,7 @@ MIME 覆盖文件每行 `<ext> <type>` 或 `<type> <ext> <ext>...`；工作目�
 | POST | `/_api/mkdir` | `{"path","name"}` |
 | POST | `/_api/newfile` | `{"path","name"}` → `{"ok":true,"path":"/dir/name","name"}`；在 `path` 目录下新建**空文件**，拒绝含 `/`、`\`、`..` 或内部后缀（`.fernpart`/`.fernedit`）的名字（`400 bad_name`），已存在则 `409 exists`，从不覆盖（需 `m`） |
 | POST | `/_api/rename` | `{"from","to"}` |
-| POST | `/_api/copy` | `{"paths":[…],"dest":"/dir"}` → `{"copied":N,"paths":[…]}`；递归复制文件/目录，重名自动改为 `<名字> - 副本`、`<名字> - 副本 (2)`，故可直接粘贴回源目录；符号链接跳过，禁止复制 `.Trash` 与把目录复制进自身（`400 copy_into_self`）（需 `m`） |
+| POST | `/_api/copy` | `{"paths":[…],"dest":"/dir"}` → `{"copied":N,"paths":[…]}`；递归复制文件/目录。粘贴回源目录时自动改为 `<名字>_副本`、`<名字>_副本 (2)`；粘贴到其他目录保留原名，仅在该目录已有同名项时才追加后缀。符号链接跳过，禁止复制 `.Trash` 与把目录复制进自身（`400 copy_into_self`）（需 `m`） |
 | POST | `/_api/delete` | `{"paths":[…]}` → 移入该路径**所在分区**的 `.Trash`（见 §5.1）；`Trash.Enabled 0` 时直接删除，响应带 `"permanent":true` |
 | PUT/POST | `/_api/upload?path=&name=&offset=&total=` | 原始字节流，`offset` 实现断点续传；偏移不符返回 `409 {"error":"offset_mismatch","offset":N,"total":T}`；带 `restart=1` 才显式丢弃已收分片；收到第一个分片前先比对所在卷的可用空间，装不下剩余字节直接返回 `507 {"error":"no_space"}`，不写入任何数据 |
 | GET/HEAD | `/_api/upload?path=&name=` | 探测续传位置，返回 `{"offset":N,"exists":bool}`（`N` 为 `<name>.fernpart` 已有字节数） |
@@ -287,7 +287,7 @@ HTTP/1.1 默认保持连接（`Connection: keep-alive`，上限 100 请求/连�
 
 内置前端资源始终 `Cache-Control: no-cache`，ETag 由资源内容编译期哈希得出（`<文件名>-<16 位十六进制>`），内容一变 ETag 必变，升级后浏览器不会继续沿用旧 UI。若升级后看到旧界面，说明浏览器仍持有旧版本发出的长缓存副本，强制刷新（`Ctrl+F5`）一次即可。
 
-选中文件或目录后工具栏出现「复制」按钮（快捷键 `Ctrl+C`），点「粘贴副本」即把副本放到当前目录，粘贴成功后剪贴内容立即清空、按钮随之隐藏，需要再次点「复制」；「剪切」仍走 `Ctrl+X` →「粘贴」的移动流程。复制粘贴直接落在同一目录时，副本命名为 `<名字> - 副本`（文件保留扩展名，如 `conf - 副本.toml`），同名已存在则递增为 `<名字> - 副本 (2)`，因此反复复制粘贴不会互相覆盖。
+选中文件或目录后工具栏出现「复制」按钮（快捷键 `Ctrl+C`），点「粘贴副本」即把副本放到当前目录，粘贴成功后剪贴内容立即清空、按钮随之隐藏，需要再次点「复制」；「剪切」仍走 `Ctrl+X` →「粘贴」的移动流程。粘贴到**同一目录**时，副本命名为 `<名字>_副本`（文件保留扩展名，如 `conf_副本.toml`），同名已存在则递增为 `<名字>_副本 (2)`，因此反复复制粘贴不会互相覆盖；粘贴到**其他目录**时直接使用原名，只有该目录里已经有同名项时才追加 `_副本` 后缀。
 
 工具栏的「新建文件夹」与「新建文件」都需要 `m` 权限，在回收站视图中隐藏。「新建文件」通过 `POST /_api/newfile` 直接落一个空文件（已存在时 `409`，绝不覆盖），创建成功后自动打开在线编辑器，可以直接输入内容再按 `Ctrl+S` 保存，省去「新建 → 上传 → 覆盖」的往返。
 
@@ -347,7 +347,7 @@ Fern.Notice "每周日 02:00-03:00 停机维护"
 ## 6. 测试与验证状态
 
 ```powershell
-cargo test     # 68 个单元测试 + 29 个端到端集成测试
+cargo test     # 74 个单元测试 + 29 个端到端集成测试
 ```
 
 集成测试（`tests/integration.rs`）会真实启动编译出的二进制，覆盖：静态资源与 304、访客权限、Range/416/条件下载、目录 302、路径穿越、登录与文件管理（mkdir/rename/delete → `.Trash`）、复制（目录递归、同名递增、跨目录、权限与错误码）、新建空文件（重名 `409`、非法名称 `400`、权限）、回收站列表/恢复/冲突覆盖/清除与权限、分块续传与 409 偏移纠正、标题与通知配置（默认值与 `Fern.Title` / `Fern.Notice` 覆盖）、方法与路由守卫、Keep-alive 连接复用与关闭语义。
@@ -357,17 +357,17 @@ cargo test     # 68 个单元测试 + 29 个端到端集成测试
 已验证：
 
 - Windows x86_64 GNU 构建通过，`--check` 解析 `fern.conf` 成功。
-- 实测接口：会话、登录/登出、列表、新建目录/新建空文件、重命名、复制（文件/目录/同目录多副本）、删除、回收站（列表/恢复/冲突覆盖/彻底删除/清空）、分块续传、206/304/416、405、目录 302、穿越拦截。
+- 实测接口：会话、登录/登出、列表、新建目录/新建空文件、重命名、复制（文件/目录/同目录多副本/跨目录保留原名）、删除、回收站（列表/恢复/冲突覆盖/彻底删除/清空）、分块续传、206/304/416、405、目录 302、穿越拦截。
 - 浏览器实测首页渲染正常（顶栏权限、面包屑、工具栏、列表、状态栏）；`#/__trash` 回收站页面渲染、选中、恢复、彻底删除、清空与「返回文件」跳转均通过。
 - 浏览器实测工具栏吸顶：60 个文件的目录滚动 1400 px 后工具栏 `getBoundingClientRect().top` 恒为 `0`、`elementFromPoint` 命中的是工具栏而不是列表行，此时直接点「新建文件夹」按钮能触发；滚回顶部阴影消失。400 px 窄屏下工具栏换行成两行仍吸顶、无横向溢出、按钮可点。
-- 浏览器实测「复制」→「粘贴副本」在源目录生成 `hello - 副本.txt`，再次粘贴得到 `hello - 副本 (2).txt`；`Ctrl+X` → 切换目录 →「粘贴」的移动流程未受影响。
+- 浏览器实测「复制」→「粘贴副本」在源目录生成 `hello_副本.txt`，再次粘贴得到 `hello_副本 (2).txt`；粘贴到其他目录则直接得到原名 `hello.txt`，该目录已有同名项时才生成 `hello_副本.txt`；`Ctrl+X` → 切换目录 →「粘贴」的移动流程未受影响。
 - 托盘图标创建成功（日志 `tray icon added`），通知区域显示的是 `ui/fern.ico` 的 fern 图标而非系统通用图标；图标由 `windres` 编进 `.rsrc`（`RT_GROUP_ICON` id 1 + 6 个 `RT_ICON`），托盘用 `LoadImageW` 按 `SM_CXSMICON` 取出（16/20/24/32/48/256 六个尺寸都在组内，缩放交给系统）；`ExtractAssociatedIcon` 也能从 exe 取出 32×32 图标，即资源管理器显示的是同一份图标。托盘右键菜单自上而下为「打开 / 配置 / 重启 / 关于 / 退出」（前三项之后一条分隔线）。「打开」用浏览器打开服务地址；「配置」弹出原生 Win32 窗体，可改共享目录、监听地址、日志级别、并发上限、访客权限、标题/公告、日志目录与回收站策略，保存时保留文件里的注释与未展示指令、先用 `Config::from_text` 校验再落盘，随后热加载（改端口走 `--wait-pid` 交接重启），详见 §4.1；「重启」先移除图标、结束当前进程，再以原命令行加 `--wait-pid <旧 pid>` 启动新实例（新实例等旧进程退出、端口释放后再绑定，且不再重复打开浏览器）；监听 socket 在 `bind` 后与 `try_clone` 后都会清掉 `HANDLE_FLAG_INHERIT`，否则子进程会继承旧监听句柄、自己 `bind` 必然得到 `WSAEADDRINUSE`（os error 10048），交接路径另有 20 次 × 150 ms 的 `AddrInUse` 重试兜底；实测 4803 与 80 端口各连续重启 3 次，每次都出现 `listening on ...`、HTTP 200、只有一个进程、无 `#32770` 错误弹窗；「关于」弹出 `MessageBoxW` 显示版本与服务地址；「退出」会先移除图标再结束进程（日志 `exit requested from the tray menu`，退出码 0、端口立即释放），不会留下无图标的服务器继续监听。
 - 无控制台行为：`release` 产物 PE 头 `Subsystem = 2`（GUI）；用 `Win32_Process.Create` 模拟资源管理器启动（父进程无控制台）后枚举该进程顶层窗口，只有隐藏的 `fern_tray_window` 与系统 IME 窗口，**没有** `ConsoleWindowClass`，即双击不弹黑框。从真实控制台运行 `--version` / `--check` 时输出正常落在该控制台（截图核对 `fern 0.1.0` 与六项生效值）；`Start-Process -RedirectStandardOutput` 也能拿到 `fern 0.1.0`，说明重定向句柄没有被 `SetStdHandle` 破坏。托盘「打开浏览器」走了 `CREATE_NO_WINDOW` 的 `cmd start`：触发前后桌面控制台窗口数不变，且日志里随即出现 `_api/session`、`_api/list` 请求，浏览器正常打开。
 - 浏览器实测 `Fern.Title` / `Fern.Notice`：标签页标题与顶栏品牌文字随配置变化，通知为空时不占位。
 - 浏览器实测图标工具栏：15 个按钮全部为内联 SVG（`stroke: currentColor`，18 px，随深/浅色自动变色），逐个放大截图核对图形正确（新建文件夹为加粗外框的文件夹 + 加号，文件夹外框收窄加高至接近正方形、不再是扁长方形，上传文件夹为与「新建文件夹」一致的外框内嵌一支向上箭头（箭头完整收在文件夹轮廓内，不越出边框），回收站为三箭头循环三角且箭头与下一段箭杆之间留有明显缺口（放大后不粘连）、进入回收站后换成回旋返回箭头）；悬停 `::after` 气泡 `opacity` 由 `0` 变为 `1`、`content` 为对应 `data-tip`，气泡向下弹出不遮挡吸顶条；400 px 窄屏下工具栏 `scrollWidth === clientWidth`、页面 `documentElement.scrollWidth === clientWidth`，无横向溢出。状态类按钮随上下文切换：选中文件后出现「复制/重命名/删除/下载」，复制后「粘贴」变为「粘贴副本」（同时 `data-tip` 与 `aria-label` 更新），进入回收站后图标切为返回箭头、提示变为「返回文件」，回退后复原。
 - 内嵌资源 gzip 往返验证：单元测试比对 `include_bytes!(ui/*)` 与解压结果一致，集成测试 `serves_ui_and_assets` 校验响应体与源码逐字节相同；实测 `/`、`/assets/app.js`、`/assets/style.css`、`/assets/favicon.svg` 的 `Content-Length` 分别为 6379 / 43682 / 13000 / 873，`If-None-Match` 复验返回 `304`。
 - 浏览器实测拖拽上传：从资源管理器把整个目录拖进列表，`webkitGetAsEntry()` 递归遍历（`readEntries` 每批 100 项需循环取空）后按相对路径 `PUT /_api/upload?name=site/assets/a.css` 逐文件上传，磁盘得到完整目录树 `site/{index.html,assets/{a.css,b.js},empty/}`，不再出现 0 KB 空文件；空目录 `site/empty` 由 `POST /_api/mkdir` 补齐（已存在时容忍 `409`）。目录 + 单个文件混拖、纯文本拖放均正常。
-- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：696 380 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 691 200 字节（`.rsrc` 内 23.5 KB 图标，资源管理器与托盘共用同一份），`cargo test` 68 + 29 全绿。
+- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：696 380 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 691 200 字节（`.rsrc` 内 23.5 KB 图标，资源管理器与托盘共用同一份），`cargo test` 74 + 29 全绿。
 
 未验证 / 未实现：
 
