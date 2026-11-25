@@ -19,6 +19,7 @@ mod mime;
 mod mounts;
 mod platform;
 mod range;
+mod search;
 mod server;
 mod trash;
 mod util;

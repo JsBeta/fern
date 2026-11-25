@@ -16,11 +16,20 @@ const state = {
   busy: false,
   editorDirty: false,
   trash: null,
+  // Recursive search results, `null` while browsing a directory. Kept apart
+  // from `entries` because a result carries its own directory, while the
+  // browsing view addresses every entry by name inside `state.path`.
+  search: null,
+  searchSeq: 0,
+  // Plain filter for the directory currently shown; typing never hits the
+  // server, only Enter starts a walk.
+  filter: '',
   // Sort state per view. Directories always stay grouped above files; this
   // only decides the order inside each group.
   sort: {
     files: { key: 'name', dir: 1 },
     trash: { key: 'deletedAt', dir: -1 },
+    search: { key: 'name', dir: 1 },
   },
 };
 
@@ -120,13 +129,61 @@ function parentPath(p) {
   return idx <= 0 ? '/' : trimmed.slice(0, idx);
 }
 
+// ------------------------------------------------------------------- search
+
+// A query with * or ? is treated as a glob both here and on the server, so the
+// instant filter and the recursive search always agree on what matches.
+function hasWildcard(q) {
+  return /[*?\\]/.test(q);
+}
+
+function escapeRegExp(c) {
+  return c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function globRegExp(q) {
+  let re = '^';
+  for (let i = 0; i < q.length; i++) {
+    const c = q[i];
+    if (c === '\\' && i + 1 < q.length) {
+      re += escapeRegExp(q[++i]);
+    } else if (c === '*') {
+      re += '.*';
+    } else if (c === '?') {
+      re += '.';
+    } else {
+      re += escapeRegExp(c);
+    }
+  }
+  return new RegExp(re + '$', 'i');
+}
+
+function matchesQuery(text, query) {
+  const q = (query || '').trim();
+  if (!q) return true;
+  if (hasWildcard(q)) return globRegExp(q).test(text);
+  return text.toLowerCase().indexOf(q.toLowerCase()) !== -1;
+}
+
 function encodePath(p) {
   return p.split('/').map((s) => (s ? encodeURIComponent(s) : s)).join('/');
 }
 
 // ---------------------------------------------------------------- navigation
 
+// Leaves the search view without touching the directory: the caller reloads.
+// Bumping `searchSeq` makes any walk still in flight drop its answer.
+function closeSearch() {
+  state.search = null;
+  state.searchSeq++;
+  state.filter = '';
+  const input = el('searchInput');
+  if (input && input.value) input.value = '';
+  document.body.classList.remove('search-mode');
+}
+
 function setPath(path) {
+  closeSearch();
   state.path = path || '/';
   state.selected.clear();
   location.hash = '#' + encodePath(state.path);
@@ -163,7 +220,7 @@ async function load() {
     renderCrumbs();
     renderList();
     el('status').textContent = data.writable ? '可写' : '只读';
-    el('count').textContent = state.entries.length + ' 项';
+    updateCount();
     loadDisk();
   } catch (e) {
     if (e.status === 401 || e.status === 403) {
@@ -246,7 +303,9 @@ async function loadDisk() {
 function renderCwd() {
   const node = el('cwd');
   if (!node) return;
-  const path = isTrashPath(state.path) ? '' : state.path;
+  // The search view names its directory in the breadcrumb, so the footer path
+  // would only repeat it.
+  const path = (isTrashPath(state.path) || state.search) ? '' : state.path;
   node.textContent = path;
   node.title = path;
   node.hidden = !path;
@@ -268,6 +327,17 @@ function renderCrumbs() {
     const current = document.createElement('span');
     current.className = 'current';
     current.textContent = '回收站';
+    wrap.appendChild(current);
+    return;
+  }
+  if (state.search) {
+    const sep = document.createElement('span');
+    sep.className = 'sep';
+    sep.textContent = '/';
+    wrap.appendChild(sep);
+    const current = document.createElement('span');
+    current.className = 'current';
+    current.textContent = '搜索“' + state.search.query + '”';
     wrap.appendChild(current);
     return;
   }
@@ -307,13 +377,26 @@ const TRASH_COLUMNS = [
   { key: 'deletedBy', label: '删除者', dir: 1 },
 ];
 
+// Search results come from many directories, so the location is a column of
+// its own instead of part of the name.
+const SEARCH_COLUMNS = [
+  { key: 'name', label: '名称', dir: 1 },
+  { key: 'location', label: '位置', dir: 1 },
+  { key: 'size', label: '大小', dir: -1 },
+  { key: 'mtime', label: '修改时间', dir: -1 },
+];
+
 function columnsFor(view) {
-  return view === 'trash' ? TRASH_COLUMNS : FILE_COLUMNS;
+  if (view === 'trash') return TRASH_COLUMNS;
+  if (view === 'search') return SEARCH_COLUMNS;
+  return FILE_COLUMNS;
 }
 
 function compareByKey(a, b, key) {
-  if (key === 'name' || key === 'deletedBy') {
-    return String(a[key] || '').localeCompare(String(b[key] || ''), 'zh-CN',
+  if (key === 'name' || key === 'deletedBy' || key === 'location') {
+    const left = key === 'location' ? a.parent : a[key];
+    const right = key === 'location' ? b.parent : b[key];
+    return String(left || '').localeCompare(String(right || ''), 'zh-CN',
       { numeric: true, sensitivity: 'base' });
   }
   return (a[key] || 0) - (b[key] || 0);
@@ -331,7 +414,9 @@ function sortEntries(items, sort, isDir) {
     if (aDir !== bDir) return aDir ? -1 : 1;
     const diff = compareByKey(a, b, key);
     if (diff) return diff * factor;
-    return compareByKey(a, b, 'name');
+    // Names repeat across directories in search results, so fall back to the
+    // containing path to keep the order stable.
+    return compareByKey(a, b, 'name') || compareByKey(a, b, 'location');
   });
 }
 
@@ -408,13 +493,30 @@ function renderHead(view, sort, keys) {
   return head;
 }
 
+// The rows the current directory shows: the whole listing, or the subset that
+// matches the instant filter typed into the search box.
+function visibleEntries() {
+  const q = state.filter;
+  if (!q) return state.entries;
+  return state.entries.filter((e) => matchesQuery(e.name, q));
+}
+
+function updateCount() {
+  const total = state.entries.length;
+  const shown = visibleEntries().length;
+  el('count').textContent = state.filter && shown !== total
+    ? shown + ' / ' + total + ' 项'
+    : total + ' 项';
+}
+
 function renderList() {
   const list = el('list');
+  if (state.search) { renderSearchList(); return; }
   if (isTrashPath(state.path)) { renderTrashList(); return; }
   list.className = 'list';
   list.textContent = '';
-  const rows = sortEntries(state.entries, state.sort.files, (e) => e.isDir);
-  el('empty').textContent = '此目录为空';
+  const rows = sortEntries(visibleEntries(), state.sort.files, (e) => e.isDir);
+  el('empty').textContent = state.filter ? '没有匹配的条目' : '此目录为空';
   el('empty').hidden = rows.length > 0;
   list.appendChild(renderHead('files', state.sort.files, rows.map((e) => e.name)));
   rows.forEach((entry, index) => {
@@ -466,6 +568,74 @@ function renderList() {
 
 function selectedNames() {
   return Array.from(state.selected);
+}
+
+// Results are read-only: every action in this UI addresses an entry as
+// `state.path + name`, and two results can share a name in different
+// directories. The checkbox column stays in place (disabled) so the grid still
+// lines up with the header.
+function searchEntry(item) {
+  return { name: item.name, size: item.size, dir: item.parent };
+}
+
+function renderSearchList() {
+  const list = el('list');
+  list.className = 'list search';
+  list.textContent = '';
+  const data = state.search;
+  const items = (data.items || []).filter(
+    (item) => !state.filter || matchesQuery(item.path, state.filter));
+  const rows = sortEntries(items, state.sort.search, (e) => e.isDir);
+  el('empty').textContent = data.matched ? '没有匹配的条目' : '没有找到匹配项';
+  el('empty').hidden = rows.length > 0;
+  list.appendChild(renderHead('search', state.sort.search, []));
+  rows.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = 'row' + (index % 2 ? ' alt' : '') + (item.isDir ? ' dir' : '');
+
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.disabled = true;
+    box.title = '搜索结果不支持批量操作';
+
+    const nameCell = document.createElement('div');
+    nameCell.className = 'name';
+    const icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.innerHTML = item.isDir ? SVG_DIR : SVG_FILE;
+    const label = document.createElement('span');
+    label.textContent = item.name;
+    label.title = item.path;
+    nameCell.appendChild(icon);
+    nameCell.appendChild(label);
+    nameCell.onclick = () => {
+      if (item.isDir) setPath(item.path);
+      else preview(searchEntry(item));
+    };
+
+    const location = document.createElement('div');
+    location.className = 'location';
+    location.textContent = item.parent;
+    location.title = '打开 ' + item.parent;
+    location.onclick = () => setPath(item.parent);
+
+    const size = document.createElement('div');
+    size.className = 'size';
+    size.textContent = item.isDir ? '—' : fmtSize(item.size);
+
+    const time = document.createElement('div');
+    time.className = 'time';
+    time.textContent = fmtTime(item.mtime);
+
+    row.appendChild(box);
+    row.appendChild(nameCell);
+    row.appendChild(location);
+    row.appendChild(size);
+    row.appendChild(time);
+    list.appendChild(row);
+  });
+  refreshToolbar();
+  updateSearchStatus();
 }
 
 function renderTrashList() {
@@ -529,6 +699,77 @@ function renderTrashList() {
   refreshToolbar();
 }
 
+// ------------------------------------------------------------ search actions
+
+function updateSearchStatus() {
+  const data = state.search;
+  if (!data) return;
+  el('status').textContent = '搜索“' + data.query + '”';
+  const shown = (data.items || []).filter(
+    (item) => !state.filter || matchesQuery(item.path, state.filter)).length;
+  let text = shown + ' 项';
+  if (shown !== (data.matched || 0)) text += ' / ' + data.matched + ' 项';
+  text += ' · 扫描 ' + (data.scanned || 0) + ' 个条目';
+  if (data.truncated) text += ' · 已截断';
+  el('count').textContent = text;
+}
+
+// A walk can take seconds on a slow volume, so the request is bounded server
+// side and a second Enter simply replaces the first through `searchSeq`.
+async function performSearch() {
+  const q = el('searchInput').value.trim();
+  if (!q) { clearSearch(); return; }
+  const seq = ++state.searchSeq;
+  state.selected.clear();
+  el('status').textContent = '搜索中…';
+  el('count').textContent = '';
+  try {
+    const data = await api('/search?path=' + encodeURIComponent(state.path) +
+      '&q=' + encodeURIComponent(q) + '&glob=' + (hasWildcard(q) ? 1 : 0) + '&limit=500');
+    if (seq !== state.searchSeq) return;
+    state.search = data;
+    renderCrumbs();
+    renderCwd();
+    renderList();
+  } catch (e) {
+    if (seq !== state.searchSeq) return;
+    state.search = null;
+    renderCrumbs();
+    renderCwd();
+    renderList();
+    updateCount();
+    if (e.status === 429) toast('已有搜索正在进行，请稍后再试');
+    else if (e.status === 400) toast('搜索关键词无效');
+    else toast('搜索失败：' + e.message);
+  }
+}
+
+// Esc, or emptying the box: back to the directory the search started from.
+function clearSearch() {
+  const was = !!state.search;
+  closeSearch();
+  state.selected.clear();
+  if (was) {
+    load();
+  } else {
+    renderCrumbs();
+    renderList();
+    updateCount();
+    refreshToolbar();
+  }
+}
+
+function refresh() {
+  if (state.search) return performSearch();
+  return load();
+}
+
+function focusSearch() {
+  const input = el('searchInput');
+  input.focus();
+  input.select();
+}
+
 function setTip(node, text) {
   node.dataset.tip = text;
   node.setAttribute('aria-label', text);
@@ -536,29 +777,35 @@ function setTip(node, text) {
 
 function refreshToolbar() {
   const trash = isTrashPath(state.path);
+  // The search view is read-only, so every action that would need a current
+  // directory is hidden; the search box stays reachable to refine the query.
+  const search = !!state.search;
   const one = state.selected.size === 1;
   const any = state.selected.size > 0;
   const modify = can('M');
-  el('btnNewFolder').hidden = trash || !modify;
-  el('btnNewFile').hidden = trash || !modify;
-  el('btnUpload').hidden = trash || !can('U');
-  el('btnUploadDir').hidden = trash || !can('U');
-  el('btnCopy').hidden = trash || !modify || !any;
-  el('btnPaste').hidden = trash || !modify || !state.clip;
+  const busy = trash || search;
+  el('searchBox').hidden = trash;
+  el('btnNewFolder').hidden = busy || !modify;
+  el('btnNewFile').hidden = busy || !modify;
+  el('btnUpload').hidden = busy || !can('U');
+  el('btnUploadDir').hidden = busy || !can('U');
+  el('btnCopy').hidden = busy || !modify || !any;
+  el('btnPaste').hidden = busy || !modify || !state.clip;
   setTip(el('btnPaste'), state.clip && state.clip.mode === 'copy' ? '粘贴副本' : '粘贴');
-  el('btnRename').hidden = trash || !modify || !one;
-  el('btnDelete').hidden = trash || !modify || !any;
-  el('btnDownload').hidden = trash || !can('R') || !any;
+  el('btnRename').hidden = busy || !modify || !one;
+  el('btnDelete').hidden = busy || !modify || !any;
+  el('btnDownload').hidden = busy || !can('R') || !any;
   setTip(el('btnDownload'), any && !one ? '打包下载 ' + state.selected.size + ' 项' : '下载');
-  el('btnTrash').hidden = !modify || !trashOn();
+  el('btnTrash').hidden = search || !modify || !trashOn();
   setTip(el('btnTrash'), trash ? '返回文件' : '回收站');
   setHidden(el('iconTrashBin'), trash);
   setHidden(el('iconTrashBack'), !trash);
   el('btnRestore').hidden = !trash || !any;
   el('btnPurge').hidden = !trash || !any;
   el('btnEmptyTrash').hidden = !trash || !(state.trash && state.trash.total);
-  el('btnUp').disabled = trash || state.path === '/';
+  el('btnUp').disabled = busy || state.path === '/';
   document.body.classList.toggle('trash-mode', trash);
+  document.body.classList.toggle('search-mode', search);
 }
 
 // ------------------------------------------------------------------- actions
@@ -798,9 +1045,10 @@ function isDirEntry(name) {
   return !!(entry && entry.isDir);
 }
 
-function startDownload(name) {
-  const zip = isDirEntry(name);
-  const url = '/files' + encodePath(joinPath(state.path, name)) + (zip ? '?zip=1' : '');
+function startDownload(name, dir, isDir) {
+  const base = dir || state.path;
+  const zip = typeof isDir === 'boolean' ? isDir : isDirEntry(name);
+  const url = '/files' + encodePath(joinPath(base, name)) + (zip ? '?zip=1' : '');
   const a = document.createElement('a');
   a.href = url;
   a.download = zip ? name + '.zip' : name;
@@ -809,8 +1057,15 @@ function startDownload(name) {
   a.remove();
 }
 
+// `entry.dir` is set by the search view, whose entries live in another
+// directory; a normal listing leaves it unset and uses the browsed path.
+function entryDir(entry) {
+  return entry.dir || state.path;
+}
+
 function preview(entry) {
-  const url = '/files' + encodePath(joinPath(state.path, entry.name));
+  const dir = entryDir(entry);
+  const url = '/files' + encodePath(joinPath(dir, entry.name));
   const content = el('modalContent');
   content.textContent = '';
   state.editorDirty = false;
@@ -837,7 +1092,7 @@ function preview(entry) {
   } else if (entry.size <= TEXT_LIMIT) {
     openTextViewer(entry, content);
   } else {
-    downloadSelectedByName(entry.name);
+    downloadSelectedByName(entry.name, dir, false);
     return;
   }
   el('modal').hidden = false;
@@ -849,14 +1104,14 @@ async function openTextViewer(entry, content, info) {
   content.appendChild(pre);
   if (!info) {
     try {
-      info = await api('/read?path=' + encodeURIComponent(joinPath(state.path, entry.name)));
+      info = await api('/read?path=' + encodeURIComponent(joinPath(entryDir(entry), entry.name)));
     } catch (e) {
       pre.textContent = e.status === 415
         ? '该文件不是 UTF-8 文本，无法在线预览。'
         : '无法预览：' + e.message;
       const download = document.createElement('button');
       download.textContent = '下载';
-      download.onclick = () => downloadSelectedByName(entry.name);
+      download.onclick = () => downloadSelectedByName(entry.name, entryDir(entry), false);
       content.appendChild(download);
       return;
     }
@@ -879,7 +1134,7 @@ async function openTextViewer(entry, content, info) {
 }
 
 function openEditor(entry, content, info) {
-  const rel = joinPath(state.path, entry.name);
+  const rel = joinPath(entryDir(entry), entry.name);
   // Textarea values always use LF, so remember the original line endings.
   const eol = info.content.indexOf('\r\n') === -1 ? 'lf' : 'crlf';
   content.textContent = '';
@@ -992,8 +1247,8 @@ function closeModal() {
   el('modalContent').textContent = '';
 }
 
-function downloadSelectedByName(name) {
-  startDownload(name);
+function downloadSelectedByName(name, dir, isDir) {
+  startDownload(name, dir, isDir);
 }
 
 // ------------------------------------------------------------------- uploads
@@ -1418,7 +1673,7 @@ function bind() {
   };
 
   el('btnUp').onclick = () => setPath(parentPath(state.path));
-  el('btnRefresh').onclick = () => load();
+  el('btnRefresh').onclick = refresh;
   el('btnNewFolder').onclick = newFolder;
   el('btnNewFile').onclick = newFile;
   el('btnRename').onclick = renameSelected;
@@ -1437,6 +1692,28 @@ function bind() {
   el('modalClose').onclick = closeModal;
   el('modal').onclick = (ev) => { if (ev.target === el('modal')) closeModal(); };
 
+  // Typing filters the current directory as it goes; only Enter starts a walk,
+  // because a recursive search reads the disk and must not run per keystroke.
+  el('searchInput').addEventListener('input', () => {
+    state.filter = el('searchInput').value.trim();
+    if (state.search) {
+      renderList();
+    } else {
+      renderList();
+      updateCount();
+    }
+  });
+  el('searchInput').addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      performSearch();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      clearSearch();
+      el('searchInput').blur();
+    }
+  });
+
   document.addEventListener('keydown', (ev) => {
     // Only text entry swallows the shortcuts: after ticking a row checkbox the
     // focus sits on an <input>, and copy/paste must still work there.
@@ -1446,13 +1723,26 @@ function bind() {
       (tag === 'INPUT' && !['checkbox', 'radio', 'button', 'submit', 'file'].includes(ev.target.type));
     if (typing) return;
     const trash = isTrashPath(state.path);
+    // Search results have no current directory for the file actions, so only
+    // refreshing and leaving the view are meaningful there.
+    if (state.search) {
+      if (ev.key === 'F5') { refresh(); ev.preventDefault(); }
+      if (ev.key === 'Escape') { clearSearch(); }
+      return;
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === 'f') { focusSearch(); ev.preventDefault(); }
+    if (ev.key === '/' && !trash) { focusSearch(); ev.preventDefault(); }
     if (ev.key === 'F2' && !trash) { renameSelected(); ev.preventDefault(); }
     if (ev.key === 'Delete') {
       if (trash) purgeSelected(); else deleteSelected();
       ev.preventDefault();
     }
-    if (ev.key === 'F5') { load(); ev.preventDefault(); }
-    if (ev.key === 'Escape') { state.selected.clear(); renderList(); }
+    if (ev.key === 'F5') { refresh(); ev.preventDefault(); }
+    if (ev.key === 'Escape') {
+      state.selected.clear();
+      renderList();
+      if (state.filter) clearSearch();
+    }
     if (!trash && (ev.ctrlKey || ev.metaKey) && ev.key === 'x') { cutSelected(); ev.preventDefault(); }
     if (!trash && (ev.ctrlKey || ev.metaKey) && ev.key === 'c' && state.selected.size) { copySelected(); ev.preventDefault(); }
     if (!trash && (ev.ctrlKey || ev.metaKey) && ev.key === 'v') { paste(); ev.preventDefault(); }
@@ -1475,6 +1765,11 @@ function bind() {
     depth = 0;
     app.classList.remove('dragging');
     if (!ev.dataTransfer) return;
+    // Results belong to many directories, so there is no obvious upload target.
+    if (state.search) {
+      toast('搜索结果中不能上传，请先返回目录');
+      return;
+    }
     // Read the entries now: the DataTransfer is emptied once the event returns.
     droppedItems(ev.dataTransfer).then((items) => {
       if (items.length) return uploadFiles(items);
@@ -1483,12 +1778,17 @@ function bind() {
 
   document.addEventListener('paste', (ev) => {
     if (!ev.clipboardData || !ev.clipboardData.files.length) return;
+    if (state.search) {
+      toast('搜索结果中不能上传，请先返回目录');
+      return;
+    }
     uploadFiles(ev.clipboardData.files);
   });
 
   window.addEventListener('hashchange', () => {
     const target = pathFromHash();
     if (target !== state.path) {
+      closeSearch();
       state.path = target;
       // Breadcrumb links bypass `setPath`, so the old directory's selection
       // would otherwise survive and make toolbar actions target stale names.

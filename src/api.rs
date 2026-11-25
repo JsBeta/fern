@@ -13,6 +13,8 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 const MAX_JSON_BODY: u64 = 4 * 1024 * 1024;
+/// A search term longer than this is a mistake, not a filename.
+const MAX_QUERY_CHARS: usize = 256;
 /// Text files at or below this size can be opened in the browser editor.
 const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 /// The write body is JSON, so escaping can make it larger than the file.
@@ -224,6 +226,100 @@ pub fn list(cfg: &Config, id: &Identity, req: &Request) -> Response {
         ("upload", Json::Bool(id.can(PERM_UPLOAD))),
         ("modify", Json::Bool(id.can(PERM_MODIFY))),
         ("letters", Json::Str(perms_to_letters(id.perms))),
+    ])
+    .dump();
+    Response::json(200, body)
+}
+
+/// Recursive name search below `path`.
+///
+/// Requires the listing permission: the response exposes the same names and
+/// locations a directory listing would, just gathered from a larger tree. The
+/// walk is capped by time, depth and entry count (see `search`), and reports
+/// `truncated` when a cap was hit so a partial answer stays honest.
+pub fn search(cfg: &Config, id: &Identity, req: &Request) -> Response {
+    if !id.can(PERM_LIST) {
+        return Response::error(403, "forbidden", "searching needs the listing permission");
+    }
+    let requested = req.q("path").unwrap_or("/");
+    let dir = match fsapi::resolve(&cfg.root, requested) {
+        Ok(p) => p,
+        Err(e) => return err_response(&e),
+    };
+    if let Err(e) = fsapi::ensure_inside(&cfg.root, &dir) {
+        return err_response(&e);
+    }
+    if trash::is_bin_path(&cfg.root, &dir) {
+        return Response::error(403, "forbidden", "the recycle bin is not searchable here");
+    }
+    match std::fs::metadata(&dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Response::error(400, "not_a_directory", "path is not a directory"),
+        Err(_) => return Response::error(404, "not_found", "directory not found"),
+    }
+    let query = req.q("q").unwrap_or("").trim();
+    if query.is_empty() {
+        return Response::error(400, "bad_request", "q must not be empty");
+    }
+    if query.chars().count() > MAX_QUERY_CHARS {
+        return Response::error(400, "bad_request", "the query is too long");
+    }
+    let glob = matches!(req.q("glob"), Some("1") | Some("true"));
+    let limit = req
+        .q("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(crate::search::DEFAULT_LIMIT)
+        .clamp(1, crate::search::MAX_LIMIT);
+    // A search is a full tree walk; letting a few users start one each would
+    // make the disk unusable for everybody else.
+    let Some(ticket) = crate::search::try_enter() else {
+        return Response::error(
+            429,
+            "search_busy",
+            "another search is still running, try again shortly",
+        );
+    };
+    let started = std::time::Instant::now();
+    let outcome = crate::search::run(
+        &cfg.root,
+        &dir,
+        query,
+        crate::search::Options {
+            glob,
+            show_hidden: id.can(PERM_SHOW_HIDDEN),
+            limit,
+        },
+    );
+    drop(ticket);
+    let items: Vec<Json> = outcome
+        .hits
+        .iter()
+        .map(|hit| {
+            json::obj(vec![
+                ("name", Json::Str(hit.name.clone())),
+                ("path", Json::Str(hit.path.clone())),
+                ("parent", Json::Str(hit.parent.clone())),
+                ("isDir", Json::Bool(hit.is_dir)),
+                ("size", Json::Num(hit.size as i64)),
+                ("mtime", Json::Num(hit.mtime as i64)),
+                ("hidden", Json::Bool(hit.hidden)),
+            ])
+        })
+        .collect();
+    let body = json::obj(vec![
+        ("path", Json::Str(fsapi::relative(&cfg.root, &dir))),
+        ("query", Json::Str(query.to_string())),
+        ("glob", Json::Bool(glob)),
+        ("items", Json::Arr(items)),
+        ("matched", Json::Num(outcome.hits.len() as i64)),
+        ("scanned", Json::Num(outcome.scanned as i64)),
+        ("dirs", Json::Num(outcome.dirs as i64)),
+        ("truncated", Json::Bool(outcome.truncated)),
+        (
+            "tookMs",
+            Json::Num(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+        ),
+        ("limit", Json::Num(limit as i64)),
     ])
     .dump();
     Response::json(200, body)

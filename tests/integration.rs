@@ -535,6 +535,80 @@ fn copy_duplicates_files_and_folders() {
 }
 
 #[test]
+fn search_walks_the_tree_and_reports_locations() {
+    let h = Harness::start();
+    std::fs::create_dir_all(h.root.join("docs/2026")).unwrap();
+    std::fs::write(h.root.join("docs/2026/Report.txt"), b"x").unwrap();
+    std::fs::create_dir_all(h.root.join(".Trash/abc/data")).unwrap();
+    std::fs::write(h.root.join(".Trash/abc/data/report-old.txt"), b"x").unwrap();
+
+    // Searching needs the listing permission, like browsing does.
+    let resp = h.request("GET", "/_api/search?path=/&q=report", b"");
+    assert_eq!(resp.status, 403, "{}", resp.text());
+
+    let cookie = h.login();
+    let auth = [("Cookie", cookie.as_str())];
+
+    let resp = h.request_with("GET", "/_api/search?path=%2F&q=report", b"", &auth);
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let body = resp.text();
+    assert!(
+        contains(&body, "\"path\":\"/docs/2026/Report.txt\""),
+        "{}",
+        body
+    );
+    assert!(contains(&body, "\"parent\":\"/docs/2026\""), "{}", body);
+    assert_eq!(json_num(&body, "matched"), 1.0);
+    assert!(contains(&body, "\"truncated\":false"), "{}", body);
+    // Deleted entries stay inside the bin, which is not part of the tree.
+    assert!(!contains(&body, ".Trash"), "{}", body);
+    assert!(json_num(&body, "scanned") >= 3.0);
+
+    // The search root is the requested directory, not always the share root.
+    let resp = h.request_with("GET", "/_api/search?path=%2Fsub&q=hello", b"", &auth);
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(json_num(&resp.text(), "matched"), 0.0);
+
+    // `glob=1` interprets `*` and `?` instead of matching them literally.
+    let resp = h.request_with(
+        "GET",
+        "/_api/search?path=%2F&glob=1&q=%2A.txt",
+        b"",
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    let body = resp.text();
+    assert!(contains(&body, "\"path\":\"/hello.txt\""), "{}", body);
+    assert!(contains(&body, "\"path\":\"/sub/nested.txt\""), "{}", body);
+    assert!(contains(&body, "\"path\":\"/docs/2026/Report.txt\""), "{}", body);
+
+    // A result cap reports itself instead of looking like a complete answer.
+    let resp = h.request_with(
+        "GET",
+        "/_api/search?path=%2F&glob=1&q=%2A.txt&limit=1",
+        b"",
+        &auth,
+    );
+    assert_eq!(resp.status, 200, "{}", resp.text());
+    assert_eq!(json_num(&resp.text(), "matched"), 1.0);
+    assert!(contains(&resp.text(), "\"truncated\":true"), "{}", resp.text());
+
+    // Bad input is refused up front.
+    assert_eq!(
+        h.request_with("GET", "/_api/search?path=%2F&q=", b"", &auth).status,
+        400
+    );
+    assert_eq!(
+        h.request_with("GET", "/_api/search?path=%2Fhello.txt&q=x", b"", &auth).status,
+        400
+    );
+    assert_eq!(
+        h.request_with("GET", "/_api/search?path=%2Fmissing&q=x", b"", &auth).status,
+        404
+    );
+}
+
+#[test]
 fn session_exposes_title_and_notice() {
     let h = Harness::start();
     let resp = h.request("GET", "/_api/session", b"");

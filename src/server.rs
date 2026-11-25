@@ -401,6 +401,7 @@ impl Server {
             }
             ("/logout", "POST") => api::logout(&self.sessions, id),
             ("/list", "GET") | ("/list", "HEAD") => api::list(cfg, id, req),
+            ("/search", "GET") | ("/search", "HEAD") => api::search(cfg, id, req),
             ("/disk", "GET") | ("/disk", "HEAD") => {
                 api::disk(cfg, id, req, |p| self.disk_space(p))
             }

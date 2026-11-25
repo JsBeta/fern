@@ -304,6 +304,48 @@ body.trash-mode .uploads {
     stroke-linejoin: round;
 }
 
+/* Search sits in the left group next to refresh, so typing never pushes the
+   action buttons around. The field stays narrow because it is also used as a
+   plain filter while the user types. */
+.toolbar .search {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--muted);
+    cursor: text;
+}
+
+.toolbar .search:focus-within {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.toolbar .search input {
+    width: 168px;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+}
+
+.toolbar .search input::placeholder {
+    color: var(--muted);
+}
+
+/* The native clear button is invisible in the dark theme and the field has
+   its own Esc handling, so it is removed. */
+.toolbar .search input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+}
+
 /* Labels live in the tooltip so the bar stays compact. It opens downwards
    because the pinned toolbar has no room above it, and the trailing buttons
    anchor it to their right edge so it cannot create a horizontal scrollbar. */
@@ -352,6 +394,11 @@ body.trash-mode .uploads {
 
 .list.trash .row {
     grid-template-columns: 28px 1fr 96px 150px 110px;
+}
+
+/* Search results carry the directory they were found in. */
+.list.search .row {
+    grid-template-columns: 28px minmax(0, 1fr) 190px 92px 140px;
 }
 
 .row {
@@ -446,13 +493,27 @@ body.trash-mode .uploads {
 }
 .row .size,
 .row .time,
-.row .by {
+.row .by,
+.row .location {
     color: var(--muted);
     font-size: 12.5px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+/* Clicking the location opens the containing directory. */
+.row .location {
+    cursor: pointer;
+}
+.row .location:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
+/* Search results are a read-only view, so their checkboxes never act. */
+.row input[type="checkbox"]:disabled {
+    cursor: default;
+    opacity: 0.35;
 }
 .row.dir .icon {
     color: var(--accent);
@@ -748,10 +809,15 @@ body.trash-mode .uploads {
     .list.trash .row {
         grid-template-columns: 24px 1fr 74px;
     }
+    .list.search .row {
+        grid-template-columns: 24px 1fr 74px;
+    }
     .row .time,
     .row .by,
+    .row .location,
     .row.head .col[data-key="mtime"],
-    .row.head .col[data-key="deletedBy"] {
+    .row.head .col[data-key="deletedBy"],
+    .row.head .col[data-key="location"] {
         display: none;
     }
     .browser {
@@ -759,6 +825,14 @@ body.trash-mode .uploads {
     }
     .toolbar button {
         padding: 6px 8px;
+    }
+    /* The bar wraps on narrow screens; giving the field the free row keeps it
+       usable instead of squeezing it next to the buttons. */
+    .toolbar .search {
+        flex: 1 1 160px;
+    }
+    .toolbar .search input {
+        width: 100%;
     }
     /* Capacity and path matter more than the credit, so the credit goes first. */
     .statusbar > .brand {

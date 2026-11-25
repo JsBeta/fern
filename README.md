@@ -9,6 +9,7 @@
 | 分类 | 说明 |
 |---|---|
 | 浏览与下载 | 目录列表、面包屑、键盘多选、深色/浅色自适应；工具栏吸顶，长列表滚动时操作按钮始终可点；工具栏为内联 SVG 纯图标 + 悬停气泡提示（随状态切换图标与文案）；`/<path>` 直链下载，目录 `302` 到前端路由 |
+| 搜索 | 输入即过滤当前目录（纯前端、零请求）；回车按名称递归搜索整个子树，结果显示所在目录可直接跳转；大小写不敏感子串匹配，含 `*` / `?` 时自动按通配符匹配；服务端限制时间、深度、条目数与并发，结果截断时明确标注 |
 | 上传 | 拖拽上传、整目录上传、分块断点续传（`.fernpart` 分片，刷新或重试后自动续传）、取消即清理残留 |
 | 文件管理 | 新建文件夹/空文件、重命名、复制（目录递归；粘贴到同一目录自动「_副本」，粘贴到其他目录保留原名）、剪切移动、删除 |
 | 在线编辑 | UTF-8 文本读写，保留 BOM 与原权限位；`mtimeMs` 冲突检测，支持强制覆盖 |
@@ -44,6 +45,7 @@
 | `src/fsapi.rs` | 路径解析与越界防护、目录枚举、断点续传写入器 |
 | `src/disk.rs` | 指定目录所在卷的容量读数：Windows 走 `GetDiskFreeSpaceExW`，Unix 走 `df -Pk`（`statvfs` 的块计数器在 Linux/FreeBSD 是 `unsigned long`、在 Darwin 是 32 位，无法共用一份结构体定义）。按目录而不是按托管根查询，`/mnt` 下挂载 `/mnt/hdd1`、`/mnt/hdd2` 时各卷才会分别显示 |
 | `src/trash.rs` | 回收站：按分区定位回收站目录（`bins.json` 登记 + 目录扫描）、条目布局与 `meta.json`、移入/列表/恢复/清除/策略淘汰、跨设备退化为复制、旧扁平条目兼容 |
+| `src/search.rs` | 递归搜索：大小写不敏感子串与 `*` / `?` 通配匹配、迭代遍历（不递归，避免爆栈）、跳过符号链接与 Windows 重解析点、排除 `.Trash` 与隐藏项、按时间/深度/条目数/结果数设上限并并发限流 |
 | `src/zip.rs` | 目录流式 ZIP 打包（存储式，`Content-Length` 预先可知） |
 | `src/auth.rs` | 用户校验、会话 token、失败次数限流 |
 | `src/config.rs` / `src/cli.rs` | `fern.conf` 与命令行解析、环境变量覆盖 |
@@ -257,6 +259,7 @@ MIME 覆盖文件每行 `<ext> <type>` 或 `<type> <ext> <ext>...`；工作目�
 | POST | `/_api/login` | `{"user","pass"}` → `Set-Cookie` |
 | POST | `/_api/logout` | 清除会话 |
 | GET | `/_api/list?path=/` | 目录列表 |
+| GET | `/_api/search?path=/&q=&glob=0&limit=200` | 在 `path` 子树内按名称递归搜索：`q` 为关键词（必填，≤256 字符），默认大小写不敏感子串匹配，`glob=1` 时 `*` / `?` 为通配符（`\` 转义）；`limit` 上限 500。返回 `{"path","query","glob","items":[{"name","path","parent","isDir","size","mtime","hidden"}],"matched","scanned","dirs","truncated","tookMs","limit"}`；名称、所在目录（`parent`）直接可用于跳转。遍历限 10 秒 / 20 万条目 / 64 层，触顶时 `truncated:true`；同时最多 2 个搜索，超出返回 `429 search_busy`；`q` 为空或超长 `400`，路径不是目录 `400`，不存在 `404`（需 `l`） |
 | GET | `/_api/disk?path=/dir` | `path` 目录所在**卷**的容量：`{"path","total","used","free","available"}`（`path` 为绝对路径，其余为字节数）。省略 `path` 时按根目录；只统计卷，不递归累加目录内容，服务端按目录缓存 5 秒（上限 32 个目录）；读不到时仍返回 200 但只有 `{"error":"unavailable"}`，前端据此隐藏页脚读数（需 `l`） |
 | POST | `/_api/mkdir` | `{"path","name"}` |
 | POST | `/_api/newfile` | `{"path","name"}` → `{"ok":true,"path":"/dir/name","name"}`；在 `path` 目录下新建**空文件**，拒绝含 `/`、`\`、`..` 或内部后缀（`.fernpart`/`.fernedit`）的名字（`400 bad_name`），已存在则 `409 exists`，从不覆盖（需 `m`） |
@@ -342,15 +345,24 @@ Fern.Notice "每周日 02:00-03:00 停机维护"
 
 `--check` 会同时打印当前的 `title` 与 `notice`，便于确认配置已生效。
 
+### 5.3 搜索
+
+工具栏左起第二个位置是搜索框（快捷键 `Ctrl+F`，或在文件列表中按 `/` 聚焦）。它有两种行为：
+
+- **打字即过滤**：不按回车时只在当前目录已加载的列表里做匹配，不产生任何请求，页脚显示「匹配数 / 总数 项」；`Esc` 或清空输入框恢复完整列表。
+- **回车递归搜索**：以当前目录为根，按名称遍历整个子树，结果页显示「名称 / 位置 / 大小 / 修改时间」四列。点目录名进入该目录；点文件名直接预览（图片、视频、音频、文本），预览里的「编辑」仍按文件真实位置读写；点「位置」列跳到所在目录。搜索结果来自多个目录，因此不参与多选与删除/复制等批量操作（复选框置灰），`Esc` 返回原目录。
+
+匹配默认大小写不敏感子串；关键词里出现 `*` 或 `?` 时自动切换成通配符匹配（如 `*.log`、`img_??.png`，`\` 可转义）。遍历在服务端受 10 秒 / 20 万条目 / 64 层深度 / 500 条结果限制，触顶时页脚标注「已截断」；同时最多允许 2 个搜索，超出返回 `429`，页面提示稍后再试——不会把不完整结果当成全部。
+
 ---
 
 ## 6. 测试与验证状态
 
 ```powershell
-cargo test     # 74 个单元测试 + 29 个端到端集成测试
+cargo test     # 81 个单元测试 + 30 个端到端集成测试
 ```
 
-集成测试（`tests/integration.rs`）会真实启动编译出的二进制，覆盖：静态资源与 304、访客权限、Range/416/条件下载、目录 302、路径穿越、登录与文件管理（mkdir/rename/delete → `.Trash`）、复制（目录递归、同名递增、跨目录、权限与错误码）、新建空文件（重名 `409`、非法名称 `400`、权限）、回收站列表/恢复/冲突覆盖/清除与权限、分块续传与 409 偏移纠正、标题与通知配置（默认值与 `Fern.Title` / `Fern.Notice` 覆盖）、方法与路由守卫、Keep-alive 连接复用与关闭语义。
+集成测试（`tests/integration.rs`）会真实启动编译出的二进制，覆盖：静态资源与 304、访客权限、Range/416/条件下载、目录 302、路径穿越、登录与文件管理（mkdir/rename/delete → `.Trash`）、复制（目录递归、同名递增、跨目录、权限与错误码）、新建空文件（重名 `409`、非法名称 `400`、权限）、回收站列表/恢复/冲突覆盖/清除与权限、递归搜索（权限、子目录范围、通配符、结果上限与截断标记、`.Trash` 排除、错误码）、分块续传与 409 偏移纠正、标题与通知配置（默认值与 `Fern.Title` / `Fern.Notice` 覆盖）、方法与路由守卫、Keep-alive 连接复用与关闭语义。
 
 回收站的按分区逻辑在单元测试与集成测试里都覆盖：挂载点前缀 id 的编解码往返（含名称里本身带 `~` 的挂载点）、根回收站仍用裸 id、挂载点回收站里的旧扁平条目也会被打上位置前缀、手写一个 `hdd1/.Trash/abc` 后能列出并按 `/hdd1/doc.txt` 恢复、`bins.json` 登记后重启仍能找回、`is_bin_path` 对嵌套 `.Trash` 的识别，以及集成层面确认 `/hdd1/.Trash` 同样 403/404/不可复制。真实跨设备行为无法在单卷测试环境里复现，靠 `move_entry` 的 `EXDEV` 退化路径兜住。
 
@@ -365,9 +377,10 @@ cargo test     # 74 个单元测试 + 29 个端到端集成测试
 - 无控制台行为：`release` 产物 PE 头 `Subsystem = 2`（GUI）；用 `Win32_Process.Create` 模拟资源管理器启动（父进程无控制台）后枚举该进程顶层窗口，只有隐藏的 `fern_tray_window` 与系统 IME 窗口，**没有** `ConsoleWindowClass`，即双击不弹黑框。从真实控制台运行 `--version` / `--check` 时输出正常落在该控制台（截图核对 `fern 0.1.0` 与六项生效值）；`Start-Process -RedirectStandardOutput` 也能拿到 `fern 0.1.0`，说明重定向句柄没有被 `SetStdHandle` 破坏。托盘「打开浏览器」走了 `CREATE_NO_WINDOW` 的 `cmd start`：触发前后桌面控制台窗口数不变，且日志里随即出现 `_api/session`、`_api/list` 请求，浏览器正常打开。
 - 浏览器实测 `Fern.Title` / `Fern.Notice`：标签页标题与顶栏品牌文字随配置变化，通知为空时不占位。
 - 浏览器实测图标工具栏：15 个按钮全部为内联 SVG（`stroke: currentColor`，18 px，随深/浅色自动变色），逐个放大截图核对图形正确（新建文件夹为加粗外框的文件夹 + 加号，文件夹外框收窄加高至接近正方形、不再是扁长方形，上传文件夹为与「新建文件夹」一致的外框内嵌一支向上箭头（箭头完整收在文件夹轮廓内，不越出边框），回收站为三箭头循环三角且箭头与下一段箭杆之间留有明显缺口（放大后不粘连）、进入回收站后换成回旋返回箭头）；悬停 `::after` 气泡 `opacity` 由 `0` 变为 `1`、`content` 为对应 `data-tip`，气泡向下弹出不遮挡吸顶条；400 px 窄屏下工具栏 `scrollWidth === clientWidth`、页面 `documentElement.scrollWidth === clientWidth`，无横向溢出。状态类按钮随上下文切换：选中文件后出现「复制/重命名/删除/下载」，复制后「粘贴」变为「粘贴副本」（同时 `data-tip` 与 `aria-label` 更新），进入回收站后图标切为返回箭头、提示变为「返回文件」，回退后复原。
+- 浏览器实测搜索（无头 Edge + CDP 驱动）：输入 `doc` 不回车时即时过滤为「1 / 3 项」；回车搜索 `report` 得到 `/docs/2026/Report.txt`，结果页四列为「名称 / 位置 / 大小 / 修改时间」，页脚显示「1 项 · 扫描 5 个条目」；`*.txt` 自动按通配符匹配，命中 `/hello.txt` 与 `/docs/2026/Report.txt`；点「位置」跳到 `/docs/2026` 并退出搜索视图，点文件名打开预览且内容按真实路径读取；搜索 `zzz` 显示「没有找到匹配项」；`.Trash` 里的同名文件不出现在结果中。
 - 内嵌资源 gzip 往返验证：单元测试比对 `include_bytes!(ui/*)` 与解压结果一致，集成测试 `serves_ui_and_assets` 校验响应体与源码逐字节相同；实测 `/`、`/assets/app.js`、`/assets/style.css`、`/assets/favicon.svg` 的 `Content-Length` 分别为 6379 / 43682 / 13000 / 873，`If-None-Match` 复验返回 `304`。
 - 浏览器实测拖拽上传：从资源管理器把整个目录拖进列表，`webkitGetAsEntry()` 递归遍历（`readEntries` 每批 100 项需循环取空）后按相对路径 `PUT /_api/upload?name=site/assets/a.css` 逐文件上传，磁盘得到完整目录树 `site/{index.html,assets/{a.css,b.js},empty/}`，不再出现 0 KB 空文件；空目录 `site/empty` 由 `POST /_api/mkdir` 补齐（已存在时容忍 `409`）。目录 + 单个文件混拖、纯文本拖放均正常。
-- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：696 380 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 691 200 字节（`.rsrc` 内 23.5 KB 图标，资源管理器与托盘共用同一份），`cargo test` 74 + 29 全绿。
+- armv7 交叉编译通过，默认链路为 musl（`armv7-unknown-linux-musleabihf` + `rust-lld`，无需外部工具链）：696 380 字节，ELF32 ARM / EABI5 / hard-float，无 `.dynamic`、无 `INTERP`，`.symtab` 已 strip；glibc 链路（Arm GNU Toolchain 13.3.rel1 + `armv7-unknown-linux-gnueabihf`）作为备选仍可构建，1 082 212 字节，ELF 属性一致。`x86_64-pc-windows-gnu` 宿主产物 691 200 字节（`.rsrc` 内 23.5 KB 图标，资源管理器与托盘共用同一份），`cargo test` 81 + 30 全绿。
 
 未验证 / 未实现：
 
